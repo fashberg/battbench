@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS models (
   id INTEGER PRIMARY KEY, maker TEXT, name TEXT, type TEXT DEFAULT '', capacity INTEGER DEFAULT 0,
   note TEXT DEFAULT '', UNIQUE (maker, name));
 CREATE TABLE IF NOT EXISTS imported (file TEXT PRIMARY KEY, at REAL, size INTEGER, rows INTEGER);
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 """
 SESSION_FIELDS = ['id', 'slot', 'start', 'end', 'task', 'chem', 'size', 'status', 'nominal', 'label',
                   'discharge_mah', 'charge_mah', 'res_min', 'temp_max', 'grade', 'note', 'battery_id',
@@ -283,6 +284,15 @@ class DB:
             n_in += len(rows)
             n_out += len(new)
         return n_in, n_out
+
+    def setting(self, key, default=None):
+        """Value stored with the data (e.g. the window layout), as text."""
+        row = self.con.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+        return row[0] if row else default
+
+    def set_setting(self, key, value):
+        self.con.execute('INSERT OR REPLACE INTO settings VALUES (?, ?)', (key, str(value)))
+        self.con.commit()
 
     def add_samples(self, samples: List[Sample]):
         self.con.executemany(

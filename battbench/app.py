@@ -20,10 +20,10 @@ from datetime import datetime
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import (QByteArray, QEvent, QLocale, QObject, QPointF, QRectF, QRegularExpression, QSettings,
-                            QSize, QSortFilterProxyModel, Qt, QThread, QTimer, Signal)
-from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap,
-                           QRegularExpressionValidator, QShortcut)
+from PySide6.QtCore import (QByteArray, QEvent, QLocale, QObject, QPointF, QRect, QRectF, QRegularExpression,
+                            QSettings, QSize, QSortFilterProxyModel, Qt, QThread, QTimer, Signal)
+from PySide6.QtGui import (QBrush, QColor, QFont, QGuiApplication, QIcon, QImage, QKeySequence, QPainter, QPen,
+                           QPixmap, QRegularExpressionValidator, QShortcut)
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter, QDialog,
                                QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
@@ -2730,7 +2730,7 @@ class MainWindow(QMainWindow):
         tlay.addWidget(self.stack)
         vsplit.addWidget(top)
 
-        hsplit = QSplitter(Qt.Horizontal)
+        self.hsplit = hsplit = QSplitter(Qt.Horizontal)
         self.plot = CurvePlot()
         hsplit.addWidget(self.plot)
         self.result = ResultPanel(self.db)
@@ -2790,6 +2790,7 @@ class MainWindow(QMainWindow):
 
         self.load_tables()
         self.select_slot(None)
+        self.restore_layout()
 
     def dev_name(self, dev):
         d = self.devs.get(dev)
@@ -3075,7 +3076,44 @@ class MainWindow(QMainWindow):
         self._update_heads()
         self.refresh_plot(keep_view=True)
 
+    LAYOUT = ('window', 'split_v', 'split_h')
+
+    def save_layout(self):
+        """Window position / size and the splitter positions, stored in the database."""
+        g = self.normalGeometry() if self.isMaximized() else self.geometry()
+        self.db.set_setting('window', f'{g.x()},{g.y()},{g.width()},{g.height()},{int(self.isMaximized())}')
+        self.db.set_setting('split_v', ','.join(map(str, self.vsplit.sizes())))
+        self.db.set_setting('split_h', ','.join(map(str, self.hsplit.sizes())))
+
+    def restore_layout(self):
+        """Back to the stored layout; a window that is not completely on one screen (monitor gone, moved off the
+        edge) gets the default size, centred on the primary screen."""
+        try:
+            x, y, w, h, maximized = (int(v) for v in (self.db.setting('window') or '').split(','))
+            rect = QRect(x, y, w, h)
+        except ValueError:
+            rect, maximized = None, 0
+        if rect is not None and any(s.availableGeometry().contains(rect) for s in QGuiApplication.screens()):
+            self.setGeometry(rect)
+            if maximized:
+                self.setWindowState(Qt.WindowMaximized)
+        else:                                  # first start, or the window would not be completely visible
+            area = QGuiApplication.primaryScreen().availableGeometry()
+            self.resize(min(1500, area.width() - 40), min(950, area.height() - 60))
+            self.move(area.center() - self.rect().center())
+        for split, key in ((self.vsplit, 'split_v'), (self.hsplit, 'split_h')):
+            try:
+                sizes = [int(x) for x in (self.db.setting(key) or '').split(',')]
+            except ValueError:
+                continue
+            if len(sizes) == split.count() and all(x >= 0 for x in sizes) and sum(sizes) > 0:
+                split.setSizes(sizes)
+
     def closeEvent(self, e):
+        try:
+            self.save_layout()
+        except sqlite3.Error as err:
+            print(f'saving the layout failed: {err!r}', file=sys.stderr)
         self.worker.stop()
         self.thread.quit()
         self.thread.wait(5000)
