@@ -1,12 +1,42 @@
 """SQLite storage: chargers, every sample, every session (charging task) with phases and result,
 batteries and models."""
+import glob
+import gzip
+import itertools
 import os
+import shutil
 import sqlite3
+import statistics
 import time
 from typing import List
 
 from .device import N8_MODES, Sample
 from .model import ABORTED, GAP_SECS, MIN_SECS, RUNNING, Phase, Session, Tracker
+
+BACKUPS = 10              # gzip copies kept next to the database (ring buffer)
+
+
+def close_and_backup(path, keep=BACKUPS):
+    """On exit: fold the write-ahead log into the database file, then save a gzip copy next to it
+    (<file>-YYYYMMDD-HHMMSS.gz) and keep only the newest `keep` copies. Returns the copy's path."""
+    con = sqlite3.connect(path, timeout=10)
+    tmp = path + '.backup-tmp'
+    try:
+        con.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        out = sqlite3.connect(tmp)                     # consistent copy even if someone still writes
+        con.backup(out)
+        out.close()
+    finally:
+        con.close()
+    target = f"{path}-{time.strftime('%Y%m%d-%H%M%S')}.gz"
+    with open(tmp, 'rb') as src, gzip.open(target + '.part', 'wb', compresslevel=6) as dst:
+        shutil.copyfileobj(src, dst, 1 << 20)
+    os.replace(target + '.part', target)
+    os.remove(tmp)
+    for old in sorted(glob.glob(glob.escape(path) + '-????????-??????.gz'))[:-keep]:
+        os.remove(old)
+    return target
+
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -77,6 +107,8 @@ DEFAULT_MODELS = [
 ]
 COLS = ('t', 'slot', 'mode', 'mode_str', 'chem', 'size', 'mv', 'ma', 'res', 'mah', 'secs',
         'temp', 'itemp', 'progress', 'power', 'energy', 'raw', 'dev')
+COMPRESSED = '1m'         # 'raw' of a reading that stands for one minute (compress_samples)
+COMPRESS_AFTER = 14 * 86400
 
 
 class DB:
@@ -193,6 +225,48 @@ class DB:
             self.rerate(sid, commit=False)
 
     # ------------------------------------------------------------- samples
+    def compress_cutoff(self, before, dev, slot):
+        """Never compress readings of a running session (a restart rebuilds it from the readings)."""
+        row = self.con.execute('SELECT MIN(start) FROM sessions WHERE status=? AND dev=? AND slot=?',
+                               (RUNNING, dev, slot)).fetchone()
+        return min(before, row[0] - GAP_SECS) if row and row[0] else before
+
+    def compress_samples(self, before, progress=None):
+        """Readings older than `before` down to one per minute: per charger, slot, minute, mode and current
+        direction (so a change from charging to discharging stays exact) one reading with the median of voltage,
+        current, internal resistance and temperature and the last value of the counters and states (mAh, time,
+        progress, mode). The raw packet is dropped. Sessions, phases and ratings are not touched.
+        Returns (readings before, readings after)."""
+        idx = {c: i for i, c in enumerate(COLS)}
+        keys = self.con.execute('SELECT DISTINCT dev, slot FROM samples WHERE t < ? AND raw IS NOT ?',
+                                (before, COMPRESSED)).fetchall()
+        n_in = n_out = 0
+        for k, (dev, slot) in enumerate(keys):
+            if progress:
+                progress(k, len(keys))
+            cutoff = self.compress_cutoff(before, dev, slot)
+            rows = self.con.execute(f"SELECT {','.join(COLS)} FROM samples WHERE dev=? AND slot=? AND t < ? "
+                                    'AND raw IS NOT ? ORDER BY t', (dev, slot, cutoff, COMPRESSED)).fetchall()
+            direction = lambda r: (r[idx['ma']] >= 10) - (r[idx['ma']] <= -10)          # noqa: E731
+            new = []
+            minute = lambda r: (int(r[0] // 60), r[idx['mode']], direction(r))        # noqa: E731
+            for _key, group in itertools.groupby(rows, key=minute):
+                group = list(group)
+                row = list(group[-1])                   # counters and states: the last reading of the minute
+                for c in ('mv', 'ma', 'temp'):
+                    row[idx[c]] = int(statistics.median(r[idx[c]] for r in group))
+                res = [r[idx['res']] for r in group if r[idx['res']] > 0]
+                row[idx['res']] = int(statistics.median(res)) if res else 0
+                row[idx['raw']] = COMPRESSED
+                new.append(tuple(row))
+            self.con.executemany('DELETE FROM samples WHERE dev=? AND slot=? AND t=?',
+                                 [(dev, slot, r[0]) for r in rows])
+            self.con.executemany(f"INSERT OR REPLACE INTO samples VALUES ({','.join('?' * len(COLS))})", new)
+            self.con.commit()
+            n_in += len(rows)
+            n_out += len(new)
+        return n_in, n_out
+
     def add_samples(self, samples: List[Sample]):
         self.con.executemany(
             f"INSERT OR IGNORE INTO samples VALUES ({','.join('?' * len(COLS))})",

@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
 from . import __version__
 from .version import AUTHOR, SOURCE, WEBSITE, full_version
 from .autofilter import FILTER_ROLE, SEARCH_ROLE, SORT_ROLE, AutoFilter, SortItem
-from .db import DB, SESSION_FIELDS
+from .db import COMPRESS_AFTER, DB, SESSION_FIELDS, close_and_backup
 from .device import UsbInfo, open_charger, usb_devices
 from .device_ble import BleManager
 from . import i18n
@@ -49,17 +49,25 @@ PKG = os.path.dirname(os.path.abspath(__file__))
 ICON = os.path.join(PKG, 'resources', 'battbench.svg')
 
 
-def default_db():
-    """Run from the source tree: battbench.db in the project folder. Installed app: per-user data folder
-    (%LOCALAPPDATA%\\BattBench on Windows, ~/.local/share/battbench elsewhere)."""
-    if not getattr(sys, 'frozen', False):
-        return os.path.join(os.path.dirname(PKG), 'battbench.db')
+def user_db():
+    """The installed app's database: %LOCALAPPDATA%\\BattBench\\battbench.db (~/.local/share/battbench elsewhere)."""
     if sys.platform == 'win32':
         folder = os.path.join(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'), 'BattBench')
     else:
         folder = os.path.join(os.environ.get('XDG_DATA_HOME') or os.path.expanduser('~/.local/share'), 'battbench')
-    os.makedirs(folder, exist_ok=True)
     return os.path.join(folder, 'battbench.db')
+
+
+def default_db():
+    """Database unless --db is given: $BATTBENCH_DB; else the installed app's one (run from source too, if it
+    exists); run from source without it: battbench.db in the project folder."""
+    if os.environ.get('BATTBENCH_DB'):
+        return os.environ['BATTBENCH_DB']
+    path = user_db()
+    if getattr(sys, 'frozen', False) or os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        return path
+    return os.path.join(os.path.dirname(PKG), 'battbench.db')
 
 
 # how the A4 Air is read; 'both': Bluetooth while connected, USB otherwise
@@ -219,6 +227,7 @@ class Worker(QObject):
     cycle = Signal(object)        # dict(live={(dev, slot): sample}, sessions={(dev, slot): info}, devices={dev: …})
     status = Signal(str)
     sessions_changed = Signal()
+    data_changed = Signal()       # readings compressed: statistics and curves are out of date
 
     def __init__(self, db_path, source, a4='both', bt=True):
         super().__init__()
@@ -249,10 +258,12 @@ class Worker(QObject):
         self.latest = dict(self.tracker.last)
         self.sessions_changed.emit()
         self._emit()
+        self.next_compress = 0
         if self.source == 'offline':
             self.status.emit(tr('No chargers (database only)'))
             while self.running:
                 self._commands()
+                self._auto_compress()
                 time.sleep(0.2)
         else:
             self._run()
@@ -268,6 +279,7 @@ class Worker(QObject):
         self._apply_a4()
         while self.running:
             self._commands()
+            self._auto_compress()
             now = time.time()
             if now >= nxt_scan:
                 nxt_scan = now + 3
@@ -448,6 +460,25 @@ class Worker(QObject):
                              merged=self.merged))
         self.merged = []
 
+    def _auto_compress(self):
+        """Setting 'compress': readings older than two weeks down to one per minute, at start and once a day."""
+        if time.time() < self.next_compress:
+            return
+        self.next_compress = time.time() + 86400
+        if QSettings('battbench', 'battbench').value('compress', False, type=bool):
+            self._compress(time.time() - COMPRESS_AFTER, optimize=False)
+
+    def _compress(self, before, optimize):
+        self.db.save_dirty(self.tracker)
+        n_in, n_out = self.db.compress_samples(
+            before, lambda k, n: self.status.emit(tr('Compressing readings … {} %').format(100 * k // max(n, 1))))
+        if optimize:
+            self.status.emit(tr('Optimising database …'))
+            self.db.optimize()
+        self.status.emit(tr('Readings compressed: {} → {}').format(n_in, n_out) if n_in else
+                         tr('No readings to compress'))
+        self.data_changed.emit()
+
     def _commands(self):
         """Edits from the GUI, applied here so the running tracker stays consistent:
         ('meta', session id, battery id, nominal) and ('battery', battery id) after a battery was edited."""
@@ -461,6 +492,8 @@ class Worker(QObject):
                 _, sid, bid, nominal = cmd
                 self.db.set_session_meta(sid, battery_id=bid)
                 self._set_nominal(sid, nominal)
+            elif cmd[0] == 'compress':                    # button "compress all now"
+                self._compress(time.time() - 3600, optimize=True)
             elif cmd[0] == 'a4':
                 self.a4 = cmd[1]
                 if self.source != 'offline':
@@ -2436,6 +2469,19 @@ class SettingsTab(QWidget):
         row.addWidget(purge)
         row.addStretch(1)
         form.addRow('', row)
+        self.compress = QCheckBox(tr('Compress readings older than two weeks automatically (one per minute)'))
+        self.compress.setChecked(QSettings('battbench', 'battbench').value('compress', False, type=bool))
+        self.compress.setToolTip(tr('Per minute the median of voltage, current, resistance and temperature and the '
+                                    'last counter values are kept. Sessions and ratings stay as they are; curves of '
+                                    'old sessions get coarser. Checked at start and once a day.'))
+        self.compress.toggled.connect(lambda on: QSettings('battbench', 'battbench').setValue('compress', on))
+        form.addRow(tr('Old readings:'), self.compress)
+        compress_now = QPushButton(tr('Compress all readings now …'))
+        compress_now.clicked.connect(self._compress_now)
+        row = QHBoxLayout()
+        row.addWidget(compress_now)
+        row.addStretch(1)
+        form.addRow('', row)
         self.stats = QLabel()
         self.stats.setTextFormat(Qt.RichText)
         form.addRow(tr('Database:'), self.stats)
@@ -2463,6 +2509,15 @@ class SettingsTab(QWidget):
                 (tr('Chargers'), fmt_int(n['devices']))]
         self.stats.setText('<table cellspacing="2">' + ''.join(
             f'<tr><td>{a}</td><td align="right">&nbsp;&nbsp;{b}</td></tr>' for a, b in rows) + '</table>')
+
+    compress_requested = Signal()
+
+    def _compress_now(self):
+        if QMessageBox.question(self, tr('Compress readings'), tr(
+                'Compress all readings (except the last hour and running sessions) to one per minute and optimise '
+                'the database? Sessions and ratings stay; the fine resolution of the curves is lost for good.')
+                ) == QMessageBox.Yes:
+            self.compress_requested.emit()
 
     def _optimize(self):
         before = self.db.size()
@@ -2665,6 +2720,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.dtab, tr('Chargers'))
         self.stab = SettingsTab(self.db)
         self.stab.deleted_changed.connect(self.deleted_changed)
+        self.stab.compress_requested.connect(lambda: self.worker.cmds.put(('compress',)))
         self.tabs.addTab(self.stab, tr('Settings'))
         self.tabs.addTab(HelpTab(), tr('Help'))
         self.tabs.addTab(InfoTab(db_path), tr('Info'))
@@ -2684,6 +2740,7 @@ class MainWindow(QMainWindow):
         self.worker.cycle.connect(self.on_cycle)
         self.worker.status.connect(self.st_conn.setText)
         self.worker.sessions_changed.connect(self.load_tables)
+        self.worker.data_changed.connect(self.data_changed)
         self.thread.start()
 
         self.load_tables()
@@ -2947,6 +3004,11 @@ class MainWindow(QMainWindow):
         for bid in battery_ids:
             self.worker.cmds.put(('battery', bid))
 
+    def data_changed(self):
+        """Readings were compressed: new statistics and curves."""
+        self.stab.refresh_stats()
+        self.refresh_plot(keep_view=True)
+
     def delete_sessions(self):
         """Selected sessions: soft delete (already deleted ones for good)."""
         if delete_rows(self, self.table, (tr('session'), tr('sessions')), self.db.delete_sessions,
@@ -2972,13 +3034,21 @@ class MainWindow(QMainWindow):
         self.worker.stop()
         self.thread.quit()
         self.thread.wait(5000)
+        self.hide()                            # the backup takes a few seconds for a large database
+        QApplication.processEvents()
+        self.db.con.close()
+        try:
+            close_and_backup(self.db.path)
+        except (OSError, sqlite3.Error) as err:
+            print(f'backup failed: {err!r}', file=sys.stderr)
         super().closeEvent(e)
 
 
 def main():
     ap = argparse.ArgumentParser(prog='battbench', description=f'BattBench {full_version()}')
     ap.add_argument('--offline', action='store_true', help='only view the database, no chargers')
-    ap.add_argument('--db', default=default_db(), help='database file (default: %(default)s)')
+    ap.add_argument('--db', default=default_db(), help='database file (default: $BATTBENCH_DB, else '
+                    '%%LOCALAPPDATA%%\\BattBench\\battbench.db if it exists; now: %(default)s)')
     ap.add_argument('--a4', choices=A4_MODES, help='read the A4 Air over usb, bt or both '
                                                   '(default: last choice in the app, else both)')
     ap.add_argument('--no-bt', action='store_true', help='no Bluetooth (A4 Air only over USB)')

@@ -103,7 +103,15 @@ but with a very high resistance (from 1000 mΩ NiMH / 400 mΩ Li-ion) is marked 
 Chargers marked “–” are supported by protocol but have not been tried on real hardware yet.
 
 ### Your data
-All readings, sessions, batteries and models are stored in one database file (SQLite) on your computer: for the
-installed app in `%LOCALAPPDATA%\BattBench\battbench.db`, run from source in `battbench.db` in the project folder. The
-tab *Info* shows where it is, *Settings* its size and number of entries; *Optimise database* there shrinks the file.
-Back it up by copying the file while BattBench is closed. Nothing is sent anywhere.
+All readings, sessions, batteries and models are stored in one database file (SQLite) on your computer, normally
+`%LOCALAPPDATA%\BattBench\battbench.db`. The tab *Info* shows which file is used, *Settings* its size and number of
+entries. Nothing is sent anywhere.
+- **Backups**: when BattBench is closed it saves a compressed copy next to the database
+  (`battbench.db-YYYYMMDD-HHMMSS.gz`); the last 10 are kept. To restore one, unpack it (e.g. with 7-Zip) and replace
+  `battbench.db` while BattBench is closed.
+- **Compressing old readings** (*Settings*): readings older than two weeks can be reduced to one per minute
+  automatically – per minute the median of voltage, current, resistance and temperature and the last counter values;
+  sessions and ratings stay as they are, only the curves of old sessions get coarser. *Compress all readings now*
+  does this for everything except the last hour and running sessions. A day of eight busy slots shrinks to about a
+  thirtieth.
+- **Optimise database** (*Settings*) rewrites the file without unused space.

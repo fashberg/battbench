@@ -56,6 +56,22 @@
         <translation>kein Ladegerät verbunden</translation>
     </message>
     <message>
+        <source>Compressing readings … {} %</source>
+        <translation>Komprimiere Messwerte … {} %</translation>
+    </message>
+    <message>
+        <source>Optimising database …</source>
+        <translation>Optimiere Datenbank …</translation>
+    </message>
+    <message>
+        <source>Readings compressed: {} → {}</source>
+        <translation>Messwerte komprimiert: {} → {}</translation>
+    </message>
+    <message>
+        <source>No readings to compress</source>
+        <translation>Keine Messwerte zu komprimieren</translation>
+    </message>
+    <message>
         <source>Slot {}</source>
         <translation>Slot {}</translation>
     </message>
@@ -398,6 +414,30 @@
     <message>
         <source>New battery …</source>
         <translation>Neuer Akku …</translation>
+    </message>
+    <message>
+        <source>Compress readings older than two weeks automatically (one per minute)</source>
+        <translation>Messwerte älter als zwei Wochen automatisch komprimieren (einer pro Minute)</translation>
+    </message>
+    <message>
+        <source>Per minute the median of voltage, current, resistance and temperature and the last counter values are kept. Sessions and ratings stay as they are; curves of old sessions get coarser. Checked at start and once a day.</source>
+        <translation>Pro Minute bleiben der Median von Spannung, Strom, Innenwiderstand und Temperatur sowie die letzten Zählerstände. Vorgänge und Bewertungen bleiben unverändert; die Kurven alter Vorgänge werden gröber. Geprüft beim Start und einmal am Tag.</translation>
+    </message>
+    <message>
+        <source>Old readings:</source>
+        <translation>Alte Messwerte:</translation>
+    </message>
+    <message>
+        <source>Compress all readings now …</source>
+        <translation>Jetzt alle Messwerte komprimieren …</translation>
+    </message>
+    <message>
+        <source>Compress readings</source>
+        <translation>Messwerte komprimieren</translation>
+    </message>
+    <message>
+        <source>Compress all readings (except the last hour and running sessions) to one per minute and optimise the database? Sessions and ratings stay; the fine resolution of the curves is lost for good.</source>
+        <translation>Alle Messwerte (außer der letzten Stunde und laufenden Vorgängen) auf einen pro Minute komprimieren und die Datenbank optimieren? Vorgänge und Bewertungen bleiben; die feine Auflösung der Kurven geht endgültig verloren.</translation>
     </message>
     <message>
         <source>session</source>

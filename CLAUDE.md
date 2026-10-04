@@ -25,8 +25,12 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
 - `packaging/` – PyInstaller spec, NSIS installer, icon, `build.ps1`; `run.bat` / `run.sh` – start from source.
 
 ## Run and test
-- `run.bat [--offline] [--db FILE] [--lang en|de]` (creates `.venv` on first run). Source runs use `battbench.db` in
-  the project folder; the installed app uses `%LOCALAPPDATA%\BattBench\battbench.db`.
+- `run.bat [--offline] [--db FILE] [--lang en|de]` (creates `.venv` on first run). Database: `--db`, else
+  `$BATTBENCH_DB`, else `%LOCALAPPDATA%\BattBench\battbench.db` (installed app; source runs too if it exists), else
+  `battbench.db` in the project folder. On exit `db.close_and_backup` checkpoints the WAL and writes
+  `<db>-YYYYMMDD-HHMMSS.gz` (last 10 kept).
+- `DB.compress_samples` (setting `compress`, button in *Settings*): readings → one per minute / mode / current
+  direction, `raw = '1m'`; never readings of a running session of that slot (resume rebuilds those).
 - The real database may be in use by a running app: open it read-only
   (`sqlite3.connect('file:battbench.db?mode=ro', uri=True)`) and test changes / migrations on a copy (`.backup()`).
 - GUI without a window: `QT_QPA_PLATFORM=offscreen` (+ `QT_QPA_FONTDIR=C:/Windows/Fonts` for screenshots),

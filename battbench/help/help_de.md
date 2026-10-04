@@ -107,8 +107,15 @@ Kapazitätsmessung, aber mit sehr hohem Widerstand (ab 1000 mΩ NiMH / 400 mΩ L
 Mit „–“ markierte Ladegeräte werden laut Protokoll unterstützt, wurden aber noch nicht am echten Gerät ausprobiert.
 
 ### Deine Daten
-Alle Messwerte, Vorgänge, Akkus und Modelle liegen in einer Datenbankdatei (SQLite) auf deinem Rechner: bei der
-installierten App in `%LOCALAPPDATA%\BattBench\battbench.db`, beim Start aus dem Quellcode in `battbench.db` im
-Projektordner. Der Reiter *Info* zeigt, wo sie liegt, die *Einstellungen* zeigen Größe und Anzahl der Einträge;
-*Datenbank optimieren* verkleinert dort die Datei. Zum Sichern die Datei kopieren, während BattBench geschlossen ist.
-Es wird nichts irgendwohin gesendet.
+Alle Messwerte, Vorgänge, Akkus und Modelle liegen in einer Datenbankdatei (SQLite) auf deinem Rechner, normalerweise
+`%LOCALAPPDATA%\BattBench\battbench.db`. Der Reiter *Info* zeigt, welche Datei verwendet wird, die *Einstellungen*
+zeigen Größe und Anzahl der Einträge. Es wird nichts irgendwohin gesendet.
+- **Sicherungen**: Beim Beenden legt BattBench eine komprimierte Kopie neben die Datenbank
+  (`battbench.db-JJJJMMTT-HHMMSS.gz`); die letzten 10 bleiben erhalten. Zum Zurückspielen eine entpacken (z. B. mit
+  7-Zip) und `battbench.db` ersetzen, während BattBench geschlossen ist.
+- **Alte Messwerte komprimieren** (*Einstellungen*): Messwerte, die älter als zwei Wochen sind, lassen sich
+  automatisch auf einen pro Minute reduzieren – pro Minute der Median von Spannung, Strom, Innenwiderstand und
+  Temperatur und die letzten Zählerstände; Vorgänge und Bewertungen bleiben unverändert, nur die Kurven alter Vorgänge
+  werden gröber. *Jetzt alle Messwerte komprimieren* macht das für alles außer der letzten Stunde und laufenden
+  Vorgängen. Ein Tag mit acht belegten Schächten schrumpft auf etwa ein Dreißigstel.
+- **Datenbank optimieren** (*Einstellungen*) schreibt die Datei ohne ungenutzten Platz neu.
