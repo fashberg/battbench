@@ -216,12 +216,16 @@
         <translation>Beschreibung:</translation>
     </message>
     <message>
-        <source>– no model (enter values by hand) –</source>
-        <translation>– kein Modell (Werte von Hand) –</translation>
-    </message>
-    <message>
         <source>Battery</source>
         <translation>Akku</translation>
+    </message>
+    <message>
+        <source>Please choose an existing model, or a special battery without a model.</source>
+        <translation>Bitte ein vorhandenes Modell wählen oder einen Spezialakku ohne Modell anlegen.</translation>
+    </message>
+    <message>
+        <source>Please choose a model above, or a special battery without a model.</source>
+        <translation>Bitte oben ein Modell wählen oder einen Spezialakku ohne Modell anlegen.</translation>
     </message>
     <message>
         <source>Please choose a model or enter maker / type.</source>
@@ -362,6 +366,14 @@
     <message>
         <source>not set</source>
         <translation>nicht gesetzt</translation>
+    </message>
+    <message>
+        <source>– please choose a model –</source>
+        <translation>– bitte Modell wählen –</translation>
+    </message>
+    <message>
+        <source>– special battery without a model (enter values by hand) –</source>
+        <translation>– Spezialakku ohne Modell (Werte von Hand eingeben) –</translation>
     </message>
     <message>
         <source>No session in this slot</source>

@@ -614,14 +614,14 @@ class SlotTile(QFrame):
         self.key = key
         self.compact = compact            # narrow tile (N16 / N24): values one per line
         self.approx_res = False           # resistance is only an estimate (A4Air)
-        slot = key[1]
         self.setFrameShape(QFrame.StyledPanel)
         self.setCursor(Qt.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)     # all columns equally wide
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 6)
         lay.setSpacing(2)
-        self.head = QLabel(f'{slot + 1}' if compact else tr('Slot {}').format(slot + 1))
+        self.head = QLabel()
+        self.set_battery(None)
         self.head.setAlignment(Qt.AlignCenter)
         f = QFont()
         f.setBold(True)
@@ -648,6 +648,12 @@ class SlotTile(QFrame):
         lay.addWidget(self.lines)
         self.set_selected(False)
         self.set_color(COLORS['empty'])
+
+    def set_battery(self, bid):
+        """Title: slot number, plus the ID of the battery assigned to the session in the slot."""
+        slot = self.key[1] + 1
+        text = f'{slot}' if self.compact else tr('Slot {}').format(slot)
+        self.head.setText(text + (f' – #{bid}' if bid is not None else ''))
 
     def set_color(self, color):
         self.color = color
@@ -1258,6 +1264,12 @@ class EditCombo(QComboBox):
         self.setInsertPolicy(QComboBox.NoInsert)
         self.setMaxVisibleItems(20)
         self.lineEdit().installEventFilter(self)
+        comp = QCompleter(self.model(), self)     # popup instead of inline completion (subclasses replace it)
+        comp.setCompletionMode(QCompleter.PopupCompletion)
+        comp.setCaseSensitivity(Qt.CaseInsensitive)
+        comp.setMaxVisibleItems(20)
+        plain_selection(comp.popup())
+        self.setCompleter(comp)
 
     def eventFilter(self, obj, e):
         if obj is self.lineEdit():
@@ -1375,22 +1387,17 @@ class ModelDialog(QDialog):
         self.setWindowTitle(tr('Edit model') if model else tr('New model'))
         self.m = model or {**dict(id=None, maker='', name='', type='NiMH AA', capacity=0, note=''), **(prefill or {})}
         form = QFormLayout(self)
-        self.maker = QComboBox()
-        self.maker.setEditable(True)
+        self.maker = EditCombo()
         self.maker.addItems([''] + db.makers())
         self.maker.setCurrentText(self.m['maker'])
         self.maker.lineEdit().setPlaceholderText(tr('e.g. Panasonic'))
         self.name = QLineEdit(self.m['name'])
         self.name.setPlaceholderText(tr('e.g. eneloop pro AA'))
-        self.type = QComboBox()
-        self.type.setEditable(True)
+        self.type = EditCombo()
         self.type.addItems(BATTERY_TYPES)
         self.type.setCurrentText(self.m['type'] or 'NiMH AA')
-        self.capacity = QSpinBox()
-        self.capacity.setRange(0, 50000)
-        self.capacity.setSingleStep(50)
-        self.capacity.setSuffix(' mAh')
-        self.capacity.setValue(self.m['capacity'] or 0)
+        self.capacity = NominalCombo()
+        self.capacity.set_value(self.m['capacity'] or 0, tr('not set'))
         self.note = QLineEdit(self.m['note'])
         form.addRow(tr('Maker:'), self.maker)
         form.addRow(tr('Model:'), self.name)
@@ -1422,8 +1429,10 @@ class ModelDialog(QDialog):
 
 class BatteryDialog(QDialog):
     """Create / edit a battery: model (search dropdown; supplies maker, type, capacity), ID, count
-    (new only: several batteries with consecutive IDs), description. There is no name field: the stored
-    name is the model name (without model: "maker type")."""
+    (new only: several batteries with consecutive IDs), description. Maker, capacity and type can only be
+    entered by hand for a special battery without a model (second dropdown entry). There is no name field: the
+    stored name is the model name (without model: "maker type")."""
+    CUSTOM = -1                       # dropdown data of "special battery without a model"
 
     def __init__(self, parent, db: DB, battery=None, prefill=None):
         super().__init__(parent)
@@ -1452,31 +1461,32 @@ class BatteryDialog(QDialog):
         self.count.setRange(1, 100)
         self.count.setToolTip(tr('Create several identical batteries at once (consecutive IDs)'))
         self.count.valueChanged.connect(lambda _v: self._count_changed())
-        self.maker = QComboBox()
-        self.maker.setEditable(True)
+        self.maker = EditCombo()
         self.maker.addItems([''] + db.makers())
         self.maker.setCurrentText(b['maker'])
-        self.capacity = QSpinBox()
-        self.capacity.setRange(0, 50000)
-        self.capacity.setSingleStep(50)
-        self.capacity.setSuffix(' mAh')
-        self.capacity.setValue(b['capacity'] or 0)
-        self.type = QComboBox()
-        self.type.setEditable(True)
+        self.capacity = NominalCombo()
+        self.capacity.set_value(b['capacity'] or 0, tr('not set'))
+        self.type = EditCombo()
         self.type.addItems(BATTERY_TYPES)
         self.type.setCurrentText(b['type'] or 'NiMH AA')
         self.desc = QPlainTextEdit(b['description'])
         self.desc.setPlaceholderText(tr('Date of purchase, device, anything notable …'))
         self.desc.setFixedHeight(90)
-        form.addRow(tr('ID:'), self.id)
-        if battery is None:
-            form.addRow(tr('Count:'), self.count)
         form.addRow(tr('Maker:'), self.maker)
         form.addRow(tr('Nominal capacity:'), self.capacity)
         form.addRow(tr('Type:'), self.type)
+        form.addRow(tr('ID:'), self.id)
+        if battery is None:
+            form.addRow(tr('Count:'), self.count)
         form.addRow(tr('Description:'), self.desc)
         form.addRow(dialog_buttons(self, self._ok))
-        self.load_models(b.get('model_id'))
+        chain = [self.model, nm, self.maker, self.capacity, self.type, self.id, self.count, self.desc]
+        for w1, w2 in zip(chain, chain[1:]):  # Tab in the order shown (default: order of creation)
+            QWidget.setTabOrder(w1, w2)
+        for w in (self.maker, self.capacity, self.type):   # a click on them while disabled explains why
+            w.installEventFilter(self)
+            w.lineEdit().installEventFilter(self)
+        self.load_models(b.get('model_id') if battery is None or b.get('model_id') is not None else self.CUSTOM)
         self.model.setFocus()
         self.model.lineEdit().selectAll()
         self.resize(480, 0)
@@ -1484,20 +1494,38 @@ class BatteryDialog(QDialog):
     def load_models(self, select=None):
         self.model.blockSignals(True)
         self.model.clear()
-        self.model.addItem(tr('– no model (enter values by hand) –'), None)
+        self.model.addItem(tr('– please choose a model –'), None)
+        self.model.addItem(tr('– special battery without a model (enter values by hand) –'), self.CUSTOM)
         for mid, maker, name, typ, cap, _note, _n, _deleted in self.db.models():
             self.model.addItem(model_text(maker, name, cap, typ), mid)
         self.model.setCurrentIndex(max(self.model.findData(select), 0))
         self.model.blockSignals(False)
         self._model_picked()
 
+    def eventFilter(self, obj, e):
+        if e.type() == QEvent.MouseButtonPress and not obj.isEnabled() and self.model.currentData() is None:
+            QTimer.singleShot(0, self._choose_model_first)
+            return True
+        return super().eventFilter(obj, e)
+
+    def _choose_model_first(self):
+        QMessageBox.information(self, tr('Battery'), tr('Please choose an existing model, or a special battery '
+                                                        'without a model.'))
+        self.model.setFocus()
+        self.model.lineEdit().selectAll()
+        self.model.open_list()
+
+    def _model_id(self):
+        mid = self.model.currentData()
+        return None if mid == self.CUSTOM else mid
+
     def _model_picked(self):
-        m = self.db.model(self.model.currentData()) if self.model.currentData() is not None else None
+        m = self.db.model(self._model_id()) if self._model_id() is not None else None
         for w in (self.maker, self.capacity, self.type):
-            w.setEnabled(m is None)
+            w.setEnabled(self.model.currentData() == self.CUSTOM)
         if m:
             self.maker.setCurrentText(m['maker'])
-            self.capacity.setValue(m['capacity'] or 0)
+            self.capacity.set_value(m['capacity'] or 0, tr('not set'))
             self.type.setCurrentText(m['type'])
         self._count_changed()
 
@@ -1506,20 +1534,26 @@ class BatteryDialog(QDialog):
         self.count.setSuffix(f'   (IDs {self.id.value()}–{self.id.value() + n - 1})' if n > 1 else '')
 
     def _new_model(self):
-        dlg = ModelDialog(self, self.db, prefill=dict(type=self.type.currentText(),
-                                                      maker=self.maker.currentText().strip()))
+        dlg = ModelDialog(self, self.db, prefill=dict(type=self.type.currentText().strip(),
+                                                      maker=self.maker.currentText().strip(),
+                                                      capacity=self.capacity.value()))
         if dlg.exec():
             self.model_changes.append((dlg.result_id, dlg.batteries))
             self.load_models(dlg.result_id)
 
     def value(self):
-        m = self.db.model(self.model.currentData()) if self.model.currentData() is not None else None
+        m = self.db.model(self._model_id()) if self._model_id() is not None else None
         maker, typ = self.maker.currentText().strip(), self.type.currentText().strip()
         return dict(id=self.id.value(), name=m['name'] if m else ' '.join(x for x in (maker, typ) if x),
                     maker=maker, capacity=self.capacity.value(), type=typ,
-                    description=self.desc.toPlainText().strip(), model_id=self.model.currentData())
+                    description=self.desc.toPlainText().strip(), model_id=self._model_id())
 
     def _ok(self):
+        if self.model.currentData() is None:
+            QMessageBox.warning(self, tr('Battery'), tr('Please choose a model above, or a special battery '
+                                                        'without a model.'))
+            self.model.setFocus()
+            return
         v = self.value()
         if not v['name']:
             QMessageBox.warning(self, tr('Battery'), tr('Please choose a model or enter maker / type.'))
@@ -1546,6 +1580,7 @@ class ResultPanel(QWidget):
         self.sid = None
         self.cur = None
         self.shown = (None, 0)            # battery id / nominal last filled into the edit fields
+        self.picked = {}                  # session id -> model chosen there without a battery (not stored)
         self.dev_name = lambda dev: ''    # set by the main window
         lay = QVBoxLayout(self)
         self.title = QLabel(tr('No session selected'))
@@ -1665,6 +1700,8 @@ class ResultPanel(QWidget):
     def _model_picked(self):
         self.reload_batteries()
         mid = self.model.currentData()
+        if self.sid is not None:
+            self.picked[self.sid] = mid
         m = self.db.model(mid) if mid is not None else None
         if m and m['capacity'] and self.battery.currentData() is None:      # rate against the model's capacity
             self.nominal.set_value(m['capacity'], self.nominal.lineEdit().placeholderText())
@@ -1760,6 +1797,7 @@ class ResultPanel(QWidget):
             for w in self.f.values():
                 w.setText('')
             self.phases.setRowCount(0)
+            self._set_model(None)
             self.reload_batteries(select=-1)
             self.nominal.set_value(0, '')
             self._lock_model()
@@ -1816,6 +1854,8 @@ class ResultPanel(QWidget):
         # hasn't touched the fields (don't overwrite what is being selected / typed)
         if not same or self.battery.currentData() == self.shown[0]:
             if not same or battery_id != self.shown[0]:
+                if not same:                  # the panel is shared: don't carry the model over to another session
+                    self._set_model(self.picked.get(self.sid))
                 self.reload_batteries(select=battery_id if battery_id is not None else -1)
         if not same or (not self.nominal.hasFocus() and self.nominal.value() == self.shown[1]):
             self.nominal.set_value(d['nominal'] or 0, self._nominal_hint(d))
@@ -2921,7 +2961,10 @@ class MainWindow(QMainWindow):
             approx = self.devs.get(dev, {}).get('model') == 'A4Air' and self.online.get(dev, {}).get('via') != 'ble'
             for slot, t in enumerate(row['tiles']):
                 t.approx_res = approx                  # A4 Air over USB: estimated; over Bluetooth: measured
-                t.update_sample(self.live.get((dev, slot)))
+                smp = self.live.get((dev, slot))
+                t.update_sample(smp)
+                s = self.cur.get((dev, slot)) if smp and smp['mode'] else None     # battery in the slot
+                t.set_battery(self.db.battery_of(s['id']) if s and s['id'] else None)
         self._fit_tiles()
         if self.hist_id is None:
             s = self.cur.get(self.sel)
@@ -3027,6 +3070,8 @@ class MainWindow(QMainWindow):
                 prefill['type'] = typ
             if d.get('nominal'):
                 prefill['capacity'] = d['nominal']
+        if self.result.model.currentData() is not None:     # the model chosen in the panel
+            prefill['model_id'] = self.result.model.currentData()
         bid = self.btab.add(prefill)
         if bid is not None:
             self.result.reload_batteries(select=bid)
