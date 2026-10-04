@@ -5,6 +5,8 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
+# backups written on exit (battbench.db-YYYYMMDD-HHMMSS.gz)
+*.db-*.gz
 # build output (packaging/build.ps1)
 build/
 battbench/_build.py
