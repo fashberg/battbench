@@ -18,6 +18,7 @@ $version = & $py -c 'import battbench; print(battbench.__version__)'
 $parts = @($version.Split('.')) + @('0', '0', '0')
 $viversion = ($parts[0..3]) -join '.'
 # the installed app shows the commit it was built from (see battbench/version.py)
+Remove-Item 'battbench\_build.py' -ErrorAction SilentlyContinue      # else git_info() returns the last build's
 $git = & $py -c 'from battbench.version import git_info; print(git_info())'
 Set-Content -Encoding utf8 -Path 'battbench\_build.py' -Value "GIT = '$git'"
 Write-Host "BattBench $version ($git)"
