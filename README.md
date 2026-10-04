@@ -12,8 +12,11 @@ The user interface is available in **English** and **German**.
 ## Features
 - **Live view** of every slot of every connected charger: mode, voltage, current, mAh, internal resistance,
   temperature, progress.
-- **Full curves** of each run (voltage, current, mAh, internal resistance) with charge / discharge phases and a
-  crosshair; the live view keeps your zoom and scrolls along.
+- **One chart per run** with voltage, current, mAh, internal resistance and temperature, each on its own axis in
+  the colour of its curve, over the duration of the run; charge / discharge phases shaded, crosshair with all
+  values next to the mouse. Point at a curve or legend entry to highlight it (the others fade); click a legend entry
+  to show or hide a value. Zoom and pan work on the time axis; the live view keeps your
+  zoom and scrolls along.
 - **Automatic session detection**: a session runs from inserting a cell to removing it (or to the next task).
   If the app was closed in between and the charger kept going, the session simply continues.
 - **Rating** of each discharge against the nominal capacity: *very good* ≥ 90 %, *good* ≥ 80 %, *fair* ≥ 60 %,

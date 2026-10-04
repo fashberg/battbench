@@ -80,6 +80,14 @@
         <translation>Innenwiderstand</translation>
     </message>
     <message>
+        <source>Temperature</source>
+        <translation>Temperatur</translation>
+    </message>
+    <message>
+        <source>Duration (h:mm:ss)</source>
+        <translation>Dauer (h:mm:ss)</translation>
+    </message>
+    <message>
         <source>%b %d, %H:%M:%S</source>
         <translation>%d.%m. %H:%M:%S</translation>
     </message>

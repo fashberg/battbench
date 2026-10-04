@@ -628,110 +628,251 @@ class SlotTile(QFrame):
         self.clicked.emit(self.key)
 
 
+def fmt_hms(secs):
+    secs = int(round(secs))
+    return f'{secs // 3600}:{secs % 3600 // 60:02d}:{secs % 60:02d}' if secs >= 0 else ''
+
+
+class DurationAxis(pg.AxisItem):
+    """x = seconds since the start of the session, labelled h:mm:ss at round steps."""
+    STEPS = (1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800)
+
+    def tickSpacing(self, min_val, max_val, size):
+        span = max_val - min_val
+        if span <= 0:
+            return super().tickSpacing(min_val, max_val, size)
+        labels = max(size / 90, 1)                                # about 90 px per label
+        i = next((i for i, s in enumerate(self.STEPS) if span / s <= labels), len(self.STEPS) - 1)
+        major = self.STEPS[i]
+        minor = next((s for s in reversed(self.STEPS[:i]) if major % s == 0 and major / s <= 6), major)
+        return [(major, 0), (minor, 0)]
+
+    def tickStrings(self, values, scale, spacing):
+        return [fmt_hms(v) for v in values]
+
+
 class CurvePlot(pg.GraphicsLayoutWidget):
-    """Voltage, current, mAh counter and internal resistance over the whole session,
-    phases shaded, crosshair with values."""
-    SERIES = [('V', '#1f77b4'), ('mA', '#d62728'), ('mAh', '#2ca02c'), ('mΩ', '#9467bd')]
+    """One chart of the whole session: voltage (left axis), current, mAh counter, internal resistance and
+    temperature (axes on the right), each axis in the colour of its curve; x = duration. Phases shaded, legend on
+    top, crosshair with values. Zooming / panning works on the time axis, the value axes follow the visible range."""
+    SERIES = [('V', '#d62728'), ('mA', '#2ca02c'), ('mAh', '#1f77b4'), ('mΩ', '#9467bd'), ('°C', '#222222')]
+    MIN_SPAN = {'°C': 10}
+    GRID = '#9a9a9a'
 
     def __init__(self):
         super().__init__()
-        names = [tr('Voltage'), tr('Current'), tr('mAh counter'), tr('Internal resistance')]
         self.setBackground('w')
-        self.plots, self.curves, self.vlines = [], [], []
+        names = [tr('Voltage'), tr('Current'), tr('mAh counter'), tr('Internal resistance'), tr('Temperature')]
+        self.names = names
         self.regions = []
         self.data = None
-        for i, (name, (unit, color)) in enumerate(zip(names, self.SERIES)):
-            p = self.addPlot(row=i, col=0, axisItems={'bottom': pg.DateAxisItem()})
-            p.setLabel('left', name, units=None)
-            p.getAxis('left').setWidth(60)
-            p.showGrid(x=True, y=True, alpha=0.25)
-            p.setDownsampling(auto=True, mode='peak')
-            p.setClipToView(True)
-            if i:
-                p.setXLink(self.plots[0])
-            if i < len(self.SERIES) - 1:
-                p.getAxis('bottom').setStyle(showValues=False)
-            c = p.plot(pen=pg.mkPen(color, width=1.5), connect='finite')
-            v = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('#555', style=Qt.DashLine))
-            p.addItem(v, ignoreBounds=True)
-            self.plots.append(p)
-            self.curves.append(c)
-            self.vlines.append(v)
-        self.info = pg.TextItem(anchor=(0, 0), color='#222', fill=pg.mkBrush(255, 255, 255, 220))
-        self.plots[0].addItem(self.info, ignoreBounds=True)
+        self.t0 = 0
+        self.plot = p = pg.PlotItem(axisItems={'bottom': DurationAxis('bottom')})
+        self.ci.addItem(p, row=0, col=0)
+        self.vb = p.vb
+        self.vb.setMouseEnabled(x=True, y=False)
+        self.vb.setAutoVisible(y=True)
+        p.setMenuEnabled(False)
+        p.hideButtons()
+        p.showGrid(x=True, y=True, alpha=0.6)
+        grid_pen = pg.mkPen(self.GRID, width=1, style=Qt.DashLine)
+        bottom = p.getAxis('bottom')
+        bottom.setPen(pg.mkPen('#444'))
+        bottom.setTextPen(pg.mkPen('#222'))
+        bottom.setTickPen(grid_pen)
+        bottom.setLabel(tr('Duration (h:mm:ss)'), color='#222')
+        self.vbs, self.curves = [self.vb], []
+        for i, ((unit, color), name) in enumerate(zip(self.SERIES, names)):
+            if i == 0:
+                vb, axis = self.vb, p.getAxis('left')
+                axis.setTickPen(grid_pen)
+            else:
+                vb = pg.ViewBox(enableMenu=False)
+                vb.setMouseEnabled(x=False, y=False)
+                vb.setAutoVisible(y=True)
+                vb.setZValue(-1)                              # the main view box on top gets the mouse
+                vb.setXLink(self.vb)
+                self.scene().addItem(vb)
+                axis = pg.AxisItem('right')
+                axis.setTickPen(pg.mkPen(color))
+                axis.linkToView(vb)
+                self.ci.addItem(axis, row=0, col=i)
+                self.vbs.append(vb)
+            axis.setPen(pg.mkPen(color))
+            axis.setTextPen(pg.mkPen(color))
+            axis.setLabel(f'{name} ({unit})', color=color)
+            axis.setWidth(58)
+            axis.enableAutoSIPrefix(False)
+            curve = pg.PlotDataItem(pen=pg.mkPen(color, width=1.6), connect='finite')
+            curve.setDownsampling(auto=True, method='peak')
+            curve.setClipToView(True)
+            vb.addItem(curve)
+            if unit in self.MIN_SPAN:                         # 1 °C steps must not fill the whole height
+                vb.setLimits(minYRange=self.MIN_SPAN[unit])
+            self.curves.append(curve)
+        self.vb.sigResized.connect(self._sync)
+        self.legend = pg.LegendItem(colCount=len(self.SERIES), brush=pg.mkBrush(255, 255, 255, 210),
+                                    labelTextColor='#222')
+        self.legend.setParentItem(self.vb)
+        self.legend.anchor((0.5, 0), (0.5, 0), offset=(0, 4))
+        self.axes = [p.getAxis('left')] + [self.ci.getItem(0, i) for i in range(1, len(self.SERIES))]
+        for i, (curve, name) in enumerate(zip(self.curves, names)):
+            self.legend.addItem(curve, name)
+            sample, label = self.legend.items[i]
+            # like Grafana: a click on a legend entry shows / hides that value
+            sample.mouseClickEvent = label.mouseClickEvent = lambda ev, i=i: (ev.accept(), self.toggle(i))
+            for item in (sample, label):
+                item.setCursor(Qt.PointingHandCursor)
+                item.setAcceptHoverEvents(True)
+                item.hoverEvent = lambda ev, i=i: self.highlight(None if ev.isExit() else i)
+        self.focus = None                     # series under the mouse (curve or legend entry): the others are dimmed
+        hidden = QSettings('battbench', 'battbench').value('hidden_series', '')
+        self.shown = [unit not in str(hidden).split(',') for unit, _c in self.SERIES]
+        for i in range(len(self.SERIES)):
+            self._show_series(i)
+        self.vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('#555', style=Qt.DashLine))
+        self.vb.addItem(self.vline, ignoreBounds=True)
+        self.vline.hide()
+        self.info = pg.TextItem(anchor=(0, 0), fill=pg.mkBrush(255, 255, 255, 225), border=pg.mkPen('#bbb'))
+        self.info.setZValue(20)
+        self.vb.addItem(self.info, ignoreBounds=True)
         self.info.hide()
-        self.title = pg.LabelItem('')
-        self.ci.layout.setRowStretchFactor(0, 1)
         self.scene().sigMouseMoved.connect(self._mouse)
+
+    def toggle(self, i):
+        self.shown[i] = not self.shown[i]
+        self._show_series(i)
+        QSettings('battbench', 'battbench').setValue(
+            'hidden_series', ','.join(unit for (unit, _c), on in zip(self.SERIES, self.shown) if not on))
+
+    DIM = 0.4
+
+    def highlight(self, k):
+        """k: series to emphasise (others at 40 % opacity: curve, axis, legend entry); None = all normal."""
+        if k != self.focus:
+            self.focus = k
+            for i in range(len(self.SERIES)):
+                self._show_series(i)
+
+    def _show_series(self, i):
+        """Curve and (right-hand) axis visible or hidden; the legend entry stays, greyed out when hidden.
+        Dimmed while another series is highlighted."""
+        on = self.shown[i]
+        dim = self.DIM if self.focus not in (None, i) else 1
+        for item in (self.curves[i], self.axes[i]):
+            item.setOpacity(dim)
+        self.curves[i].setVisible(on)
+        if i:
+            self.axes[i].setVisible(on)
+            self.axes[i].setMaximumWidth(58 if on else 0)          # no empty gap for a hidden axis
+        else:
+            color = self.SERIES[0][1] if on else '#bbbbbb'
+            self.axes[0].setTextPen(pg.mkPen(color))
+            self.axes[0].setPen(pg.mkPen(color))
+        sample, label = self.legend.items[i]
+        label.setText(self.names[i], color='#222' if on else '#aaaaaa', bold=self.focus == i)
+        label.setOpacity(dim)
+        sample.setOpacity((1 if on else 0.3) * dim)
+
+    def _sync(self):
+        """The extra view boxes cover exactly the main one."""
+        for vb in self.vbs[1:]:
+            vb.setGeometry(self.vb.sceneBoundingRect())
+            vb.linkedViewChanged(self.vb, vb.XAxis)
 
     def clear_data(self, title=''):
         self.set_data([], [], title)
 
     def set_data(self, rows, phases, title='', keep_view=False):
         """rows: (t, mv, ma, res, mah, temp, mode) from DB.samples; phases: (kind, start, end, mah)."""
+        vr = self.vb.viewRange()[0] if keep_view and self.data is not None else None
         if rows:
             a = np.array(rows, dtype=float)
-            t = a[:, 0]
-            v = a[:, 1] / 1000
+            if not vr:
+                self.t0 = a[0, 0]
+            x = a[:, 0] - self.t0
             res = a[:, 3].copy()
             res[res <= 0] = np.nan
-            self.data = (t, v, a[:, 2], a[:, 4], res)
+            temp = a[:, 5].copy()
+            temp[temp <= 0] = np.nan                  # 0 = not reported (e.g. A4 Air over Bluetooth)
+            self.data = (x, a[:, 1] / 1000, a[:, 2], a[:, 4], res, temp)
         else:
             self.data = None
-        vr = self.plots[0].viewRange()[0] if keep_view else None
-        follow = keep_view and self.data is not None and vr[1] >= self._last_t - 5
-        for c, y in zip(self.curves, self.data[1:] if self.data else [None] * 4):
-            if y is None:
-                c.setData([], [])
+        follow = vr is not None and self.data is not None and vr[1] >= self._last_x - 5
+        for i, curve in enumerate(self.curves):
+            if self.data is None:
+                curve.setData([], [])
             else:
-                c.setData(self.data[0], y)
-        for p, r in self.regions:
-            p.removeItem(r)
+                curve.setData(self.data[0], self.data[i + 1])
+        for r in self.regions:
+            self.vb.removeItem(r)
         self.regions = []
-        for kind, a, b, mah in phases:
+        for kind, a, b, _mah in phases:
             col = QColor(PHASE_COLORS.get(kind, '#999999'))
-            col.setAlpha(40)
-            for p in self.plots:
-                r = pg.LinearRegionItem(values=(a, b), movable=False, brush=QBrush(col),
-                                        pen=pg.mkPen(None))
-                r.setZValue(-10)
-                p.addItem(r, ignoreBounds=True)
-                self.regions.append((p, r))
-        self.plots[0].setTitle(title)
+            col.setAlpha(35)
+            r = pg.LinearRegionItem(values=(a - self.t0, b - self.t0), movable=False, brush=QBrush(col),
+                                    pen=pg.mkPen(None))
+            r.setZValue(-10)
+            self.vb.addItem(r, ignoreBounds=True)
+            self.regions.append(r)
+        self.plot.setTitle(title, color='#222', size='11pt')
         if self.data is not None:
-            self._last_t = self.data[0][-1]
-        if not keep_view or not vr:
-            for p in self.plots:
-                p.enableAutoRange()
+            self._last_x = self.data[0][-1]
+        if vr is None:
+            for vb in self.vbs:
+                vb.enableAutoRange()
         elif follow:                                 # live view: keep the zoom width, scroll along
             w = vr[1] - vr[0]
-            self.plots[0].setXRange(self._last_t - w + 1, self._last_t + 1, padding=0)
-            for p in self.plots:
-                p.enableAutoRange(axis='y')
+            self.vb.setXRange(self._last_x - w + 1, self._last_x + 1, padding=0)
+        for vb in self.vbs:
+            vb.enableAutoRange(axis='y')
 
-    _last_t = 0
+    _last_x = 0
+
+    def _near(self, pos, x, px=6):
+        """Series whose curve passes within px pixels of the mouse, or None."""
+        xs = self.data[0]
+        w = self.vb.viewPixelSize()[0] * px
+        a, b = np.searchsorted(xs, [x - w, x + w])
+        best, best_d = None, px
+        for k in range(len(self.SERIES)):
+            ys = self.data[k + 1][max(a - 1, 0):b + 1]           # the segments around the mouse
+            ys = ys[~np.isnan(ys)]
+            if not self.shown[k] or not len(ys):
+                continue
+            top = self.vbs[k].mapViewToScene(QPointF(x, ys.max())).y()
+            bottom = self.vbs[k].mapViewToScene(QPointF(x, ys.min())).y()
+            d = 0 if top <= pos.y() <= bottom else min(abs(pos.y() - top), abs(pos.y() - bottom))
+            if d < best_d:
+                best, best_d = k, d
+        return best
 
     def _mouse(self, pos):
-        if self.data is None:
-            return
-        for p in self.plots:
-            if p.sceneBoundingRect().contains(pos):
-                x = p.vb.mapSceneToView(pos).x()
-                break
-        else:
+        if self.data is None or not self.vb.sceneBoundingRect().contains(pos):
             self.info.hide()
+            self.vline.hide()
+            self.highlight(None)
             return
-        t, v, ma, mah, res = self.data
-        i = int(np.clip(np.searchsorted(t, x), 0, len(t) - 1))
-        for line in self.vlines:
-            line.setPos(t[i])
-        r = '–' if np.isnan(res[i]) else f'{res[i]:.0f}'
-        stamp = datetime.fromtimestamp(t[i]).strftime(tr('%b %d, %H:%M:%S'))
-        self.info.setText(f'{stamp}\n{v[i]:.3f} V   {ma[i]:.0f} mA\n'
-                          f'{mah[i]:.0f} mAh   {r} mΩ')
-        (x0, x1), (y0, y1) = self.plots[0].viewRange()
-        self.info.setPos(t[i] + (x1 - x0) * 0.01 if t[i] < (x0 + x1) / 2 else t[i] - (x1 - x0) * 0.22, y1)
+        x = self.vb.mapSceneToView(pos).x()
+        if not self.legend.sceneBoundingRect().contains(pos):      # over the legend its entries decide
+            self.highlight(self._near(pos, x))
+        xs = self.data[0]
+        i = int(np.clip(np.searchsorted(xs, x), 0, len(xs) - 1))
+        self.vline.setPos(xs[i])
+        self.vline.show()
+        stamp = datetime.fromtimestamp(self.t0 + xs[i]).strftime(tr('%b %d, %H:%M:%S'))
+        values = [f'{self.data[1][i]:.3f} V', f'{self.data[2][i]:.0f} mA', f'{self.data[3][i]:.0f} mAh',
+                  '– mΩ' if np.isnan(self.data[4][i]) else f'{self.data[4][i]:.0f} mΩ',
+                  '– °C' if np.isnan(self.data[5][i]) else f'{self.data[5][i]:.0f} °C']
+        lines = ''.join(f"<br><span style='color:{color}'>{f'<b>{v}</b>' if k == self.focus else v}</span>"
+                        for k, (v, (_u, color), on) in enumerate(zip(values, self.SERIES, self.shown)) if on)
+        self.info.setHtml(f"<span style='color:#222'><b>{fmt_hms(xs[i])}</b> &nbsp; {stamp}</span>{lines}")
         self.info.show()
+        # next to the mouse: right below it, or left / above it where the chart ends
+        gap, box, frame = 14, self.info.boundingRect(), self.vb.sceneBoundingRect()
+        sx = pos.x() + gap if pos.x() + gap + box.width() <= frame.right() else pos.x() - gap - box.width()
+        sy = pos.y() + gap if pos.y() + gap + box.height() <= frame.bottom() else pos.y() - gap - box.height()
+        self.info.setPos(self.vb.mapSceneToView(QPointF(max(sx, frame.left()), max(sy, frame.top()))))
 
 
 BATTERY_TYPES = ['NiMH AA', 'NiMH AAA', 'NiMH LSD AA (eneloop type)', 'NiMH LSD AAA (eneloop type)',
