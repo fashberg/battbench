@@ -465,7 +465,7 @@ class Worker(QObject):
         if time.time() < self.next_compress:
             return
         self.next_compress = time.time() + 86400
-        if QSettings('battbench', 'battbench').value('compress', False, type=bool):
+        if QSettings('battbench', 'battbench').value('compress', True, type=bool):
             self._compress(time.time() - COMPRESS_AFTER, optimize=False)
 
     def _compress(self, before, optimize):
@@ -2470,7 +2470,7 @@ class SettingsTab(QWidget):
         row.addStretch(1)
         form.addRow('', row)
         self.compress = QCheckBox(tr('Compress readings older than two weeks automatically (one per minute)'))
-        self.compress.setChecked(QSettings('battbench', 'battbench').value('compress', False, type=bool))
+        self.compress.setChecked(QSettings('battbench', 'battbench').value('compress', True, type=bool))
         self.compress.setToolTip(tr('Per minute the median of voltage, current, resistance and temperature and the '
                                     'last counter values are kept. Sessions and ratings stay as they are; curves of '
                                     'old sessions get coarser. Checked at start and once a day.'))

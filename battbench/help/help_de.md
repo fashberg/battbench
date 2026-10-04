@@ -113,8 +113,8 @@ zeigen Größe und Anzahl der Einträge. Es wird nichts irgendwohin gesendet.
 - **Sicherungen**: Beim Beenden legt BattBench eine komprimierte Kopie neben die Datenbank
   (`battbench.db-JJJJMMTT-HHMMSS.gz`); die letzten 10 bleiben erhalten. Zum Zurückspielen eine entpacken (z. B. mit
   7-Zip) und `battbench.db` ersetzen, während BattBench geschlossen ist.
-- **Alte Messwerte komprimieren** (*Einstellungen*): Messwerte, die älter als zwei Wochen sind, lassen sich
-  automatisch auf einen pro Minute reduzieren – pro Minute der Median von Spannung, Strom, Innenwiderstand und
+- **Alte Messwerte komprimieren** (*Einstellungen*, standardmäßig an): Messwerte, die älter als zwei Wochen sind,
+  werden automatisch auf einen pro Minute reduziert – pro Minute der Median von Spannung, Strom, Innenwiderstand und
   Temperatur und die letzten Zählerstände; Vorgänge und Bewertungen bleiben unverändert, nur die Kurven alter Vorgänge
   werden gröber. *Jetzt alle Messwerte komprimieren* macht das für alles außer der letzten Stunde und laufenden
   Vorgängen. Ein Tag mit acht belegten Schächten schrumpft auf etwa ein Dreißigstel.

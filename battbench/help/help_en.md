@@ -109,8 +109,8 @@ entries. Nothing is sent anywhere.
 - **Backups**: when BattBench is closed it saves a compressed copy next to the database
   (`battbench.db-YYYYMMDD-HHMMSS.gz`); the last 10 are kept. To restore one, unpack it (e.g. with 7-Zip) and replace
   `battbench.db` while BattBench is closed.
-- **Compressing old readings** (*Settings*): readings older than two weeks can be reduced to one per minute
-  automatically – per minute the median of voltage, current, resistance and temperature and the last counter values;
+- **Compressing old readings** (*Settings*, on by default): readings older than two weeks are reduced to one per
+  minute automatically – per minute the median of voltage, current, resistance and temperature and the last counter values;
   sessions and ratings stay as they are, only the curves of old sessions get coarser. *Compress all readings now*
   does this for everything except the last hour and running sessions. A day of eight busy slots shrinks to about a
   thirtieth.
