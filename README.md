@@ -15,6 +15,14 @@ starts or stops anything.
 The user interface is available in **English** and **German**. The user guide below is also built into the app
 (tab *Help*).
 
+## Why this app?
+I have loved my ISDT N8 for years, but one thing always bugged me: the result of the analysis. I want to see how much
+capacity my batteries have left, yet as soon as discharging is done, that number is gone from the display.
+
+Thanks to the [isdttool](https://github.com/maxried/isdttool) library by [maxried](https://github.com/maxried), I was
+able to write a "works for me" battery analysis tool together with Claude Opus 5.5 in no time. It listens in on the
+charger over USB and logs everything for me – and on top of that keeps a database of all my batteries.
+
 ## Features
 - **Live view** of every slot of every connected charger: mode, voltage, current, mAh, internal resistance,
   temperature, progress.
