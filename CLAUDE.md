@@ -15,6 +15,10 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
 - `battbench/device_ble.py` – Bluetooth (asyncio thread): ISDT Air chargers; `device_skyrc.py` – SkyRC MC3000/MC5000.
 - `battbench/model.py` – session / phase detection and rating; `battbench/db.py` – storage and DB upgrades.
 - `battbench/i18n.py` – `tr()`, `tr_data()`, language choice; `battbench/translations/` – `.ts` / `.qm`, `update.py`.
+- `battbench/autofilter.py` – sortable tables with spreadsheet-like column filters (`make_table(..., autofilter=True)`);
+  cells are `SortItem`s with `SORT_ROLE` (sort key, `None` = empty, never mix numbers and text in one column) and
+  optionally `FILTER_ROLE` (value in the filter list, e.g. the day of a date).
+- `battbench/version.py` – version text with git commit, author and links.
 - `packaging/` – PyInstaller spec, NSIS installer, icon, `build.ps1`; `run.bat` / `run.sh` – start from source.
 
 ## Run and test
@@ -47,8 +51,12 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
   run time; block signals while refilling programmatically (`blockSignals`).
 - **Only read-only commands** go to the chargers (ISDT: `0xE0`, `0xDE`, `0xE4`, `0xFE 00`; SkyRC: status queries).
   Commands like `57` / `74` / `65` and `FE` other than `FE 00` restart or stop running tasks.
-- Settings: `QSettings('battbench', 'battbench')` keys `a4`, `lang`.
-- Version: `battbench/__init__.py` (`__version__`), used by the window, `--help` and the installer.
+- Settings: `QSettings('battbench', 'battbench')` keys `a4`, `lang` (language: tab *Settings*).
+- **Version** `battbench/__init__.py` `__version__`: year.month (`2026.10`), bug fixes `2026.10.1`. `version.git_info()`
+  adds the commit (from git, or from `battbench/_build.py` written by `build.ps1`). Author: Folke Ashberg,
+  www.ashberg.de.
+- Tables refill every few seconds (`load_tables`): keep sorting / filters (`fill_session_table` does) and select rows
+  by id (`select_by_id`), not by row number.
 
 ## Release build (Windows)
 `powershell -ExecutionPolicy Bypass -File packaging\build.ps1` → `build\BattBench-<version>-setup.exe` (needs NSIS 3).

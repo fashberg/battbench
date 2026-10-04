@@ -7,3 +7,4 @@ __pycache__/
 *.db-shm
 # build output (packaging/build.ps1)
 build/
+battbench/_build.py

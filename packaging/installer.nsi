@@ -1,5 +1,5 @@
 ﻿; BattBench installer (NSIS 3, Unicode). Built by packaging/build.ps1:
-;   makensis /DVERSION=1.0.0 packaging\installer.nsi
+;   makensis /DVERSION=2026.10 /DVIVERSION=2026.10.0.0 packaging\installer.nsi
 ; Installs for the current user only (no administrator rights): program in %LOCALAPPDATA%\Programs\BattBench,
 ; Start menu entry, optional desktop shortcut, entry in "Installed apps". The measurement database lives in
 ; %LOCALAPPDATA%\BattBench and is kept on uninstall unless the user chooses to delete it.
@@ -8,7 +8,10 @@ Unicode true
 !include "MUI2.nsh"
 
 !ifndef VERSION
-  !define VERSION "0.0.0"
+  !define VERSION "0.0"
+!endif
+!ifndef VIVERSION
+  !define VIVERSION "0.0.0.0"
 !endif
 !define APP "BattBench"
 !define EXE "BattBench.exe"
@@ -23,12 +26,13 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 BrandingText "${APP} ${VERSION}"
 
-VIProductVersion "${VERSION}.0"
+VIProductVersion "${VIVERSION}"
 VIAddVersionKey /LANG=1033 "ProductName" "${APP}"
 VIAddVersionKey /LANG=1033 "FileDescription" "${APP} Setup"
 VIAddVersionKey /LANG=1033 "FileVersion" "${VERSION}"
 VIAddVersionKey /LANG=1033 "ProductVersion" "${VERSION}"
-VIAddVersionKey /LANG=1033 "LegalCopyright" "GPL-3.0"
+VIAddVersionKey /LANG=1033 "CompanyName" "Folke Ashberg"
+VIAddVersionKey /LANG=1033 "LegalCopyright" "Folke Ashberg, GPL-3.0"
 
 !define MUI_ICON "battbench.ico"
 !define MUI_UNICON "battbench.ico"
@@ -88,7 +92,8 @@ Section "!$(SecApp)" SEC_APP
   CreateShortcut "$SMPROGRAMS\${APP}.lnk" "$INSTDIR\${EXE}"
   WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "${APP}"
   WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "${APP}"
+  WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "Folke Ashberg"
+  WriteRegStr HKCU "${UNINST_KEY}" "URLInfoAbout" "https://www.ashberg.de"
   WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\${EXE}"
   WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'

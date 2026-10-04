@@ -79,21 +79,31 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28e9", ATTRS{idProduct}=="028a", TAG+="ua
 - **Charger tabs** at the top work like browser tabs: name, input voltage, connection (USB / Bluetooth symbol) and
   one LED per slot in the slot colour – grey empty, orange charging, pink discharging, blue analysis / activation /
   cycle, green done, red error. Click a tab to see its slot tiles.
-- **Tab “+”**: supported chargers, what is connected, Bluetooth search, how to read the A4 Air, language.
+- **Tab “+”**: supported chargers, what is connected, Bluetooth search, how to read the A4 Air.
 - **Slot tile**: click it to see the running session with its curves and result.
 - **Result panel**: rating, capacities, internal resistance, temperature and phases of the selected session. Assign
   the battery here (searchable list, or *New …*) or enter the nominal capacity.
 - **Tabs at the bottom**
   - *Sessions*: all sessions with charger, slot, result and rating; click one to open it.
-  - *Batteries*: your batteries with number of sessions, last measured capacity and rating; on the right the
-    **history** of the selected battery. Double-click a session to open it.
+  - *Batteries*: your batteries with number of sessions, last measured capacity and rating, last measurement and
+    last charge, with a search field; on the right the **history** of the selected battery. Double-click a session
+    to open it.
   - *Models*: maker / model list. Changing a model updates all its batteries and rates their sessions again.
   - *Chargers*: known chargers; rename them (the name is stored only in BattBench, never in the charger).
+  - *Settings*: language. *Info*: version, author, links, location of the database.
+- **Tables** sort by a click on a column title and filter like a spreadsheet: the funnel in each column title opens
+  the list of the column's values (with search) – tick the ones to show. Dates are filtered by day.
+- **Battery field**: clicking into it selects the text, so you can simply type to search (“ene pro” finds
+  eneloop pro).
 
 ### Rating
 The rating compares the discharge capacity with the nominal capacity. The nominal capacity comes from the assigned
 battery (or its model) or is entered in the result panel. The N8 does not tell AA from AAA, so without a battery or a
 nominal capacity a session from the N8 is not rated.
+
+## Versions
+Releases are numbered by year and month: `2026.10`, bug fix releases `2026.10.1`, `2026.10.2`, … Run from a git
+checkout, BattBench also shows the commit it runs from (tab *Info*, `--help`).
 
 ## Development
 See [CLAUDE.md](CLAUDE.md) for the code layout and conventions.
@@ -114,5 +124,5 @@ See [CLAUDE.md](CLAUDE.md) for the code layout and conventions.
 BattBench is not affiliated with ISDT or SkyRC. Chargers and batteries can be dangerous – never leave them
 unattended. This software comes without any warranty.
 
-## License
-GPLv3, see [LICENSE](LICENSE).
+## Author and license
+Folke Ashberg, [www.ashberg.de](https://www.ashberg.de). GPLv3, see [LICENSE](LICENSE).

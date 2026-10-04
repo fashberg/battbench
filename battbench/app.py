@@ -19,22 +19,25 @@ from datetime import datetime
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import (QByteArray, QObject, QSettings, QSortFilterProxyModel, Qt, QThread, QRectF, QTimer,
-                            Signal)
-from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtCore import (QByteArray, QEvent, QObject, QPointF, QSettings, QSortFilterProxyModel, Qt, QThread, QRectF,
+                            QTimer, Signal)
+from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QCompleter, QDialog, QDialogButtonBox,
                                QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-                               QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSizePolicy,
+                               QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
                                QSpinBox, QStackedWidget, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from . import __version__
+from .version import AUTHOR, SOURCE, WEBSITE, full_version
+from .autofilter import FILTER_ROLE, SEARCH_ROLE, SORT_ROLE, AutoFilter, SortItem
 from .db import DB, SESSION_FIELDS
 from .device import UsbInfo, open_charger, usb_devices
 from .device_ble import BleManager
 from .i18n import LANGUAGES, install, pick_language, tr, tr_data
-from .model import (CHARGE, DISCHARGE, GAP_SECS, GRADES, MODE_NAMES, NO_GRADE, NOMINAL, Session, Tracker, note_text,
-                    rate_values)
+from .model import DONE as DONE_MODES
+from .model import (CHARGE, DISCHARGE, GAP_SECS, GRADES, MODE_NAMES, NO_GRADE, NOMINAL, PHASE_MIN_MA, Session, Tracker,
+                    note_text, rate_values)
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 ICON = os.path.join(PKG, 'resources', 'battbench.svg')
@@ -106,6 +109,10 @@ def via_pixmap(vias, color, size=14):
             p, QRectF(i * (size + 2), 0, size, size))
     p.end()
     return pm
+
+
+def fmt_day(t):
+    return datetime.fromtimestamp(t).strftime(tr('%Y-%m-%d')) if t else ''
 
 
 def fmt_dur(secs):
@@ -452,6 +459,87 @@ class Worker(QObject):
 
 
 # ======================================================================= widgets
+class ProgressBar(QWidget):
+    """Charger's progress (%) with the slot colour. While charging, chevrons run towards 100 %, while discharging
+    towards 0 %; standing still when done or idle."""
+    STEP = 12                             # chevron spacing in px
+    FPS = 25
+
+    def __init__(self):
+        super().__init__()
+        self.value, self.color, self.direction, self.phase = 0, QColor(COLORS['empty']), 0, 0.0
+        self.setFixedHeight(16)
+        self.timer = QTimer(self)
+        self.timer.setInterval(1000 // self.FPS)
+        self.timer.timeout.connect(self._tick)
+
+    def set_state(self, value, color, direction):
+        """direction: +1 charging, -1 discharging, 0 no animation."""
+        self.value, self.color, self.direction = max(0, min(100, value)), QColor(color), direction
+        self._run()
+        self.update()
+
+    def _run(self):
+        on = self.direction != 0 and self.isVisible()
+        if on != self.timer.isActive():
+            self.timer.start() if on else self.timer.stop()
+
+    def _tick(self):
+        self.phase = (self.phase + self.direction * self.STEP / self.FPS) % self.STEP     # one chevron per second
+        self.update()
+
+    def showEvent(self, e):
+        self._run()
+
+    def hideEvent(self, e):
+        self.timer.stop()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        pal = self.palette()
+        p.setPen(QColor('#999999'))
+        p.setBrush(pal.base())
+        p.drawRoundedRect(r, 3, 3)
+        fill = QRectF(r.left(), r.top(), r.width() * self.value / 100, r.height())
+        p.save()
+        p.setClipRect(fill)
+        p.setPen(Qt.NoPen)
+        p.setBrush(self.color)
+        p.drawRoundedRect(r, 3, 3)
+        if self.direction:                                # chevrons pointing in the running direction
+            pen = QPen(QColor(255, 255, 255, 80), 2)
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            h, d = r.height(), self.direction * 3
+            x = r.left() - self.STEP + self.phase
+            while x < fill.right() + self.STEP:
+                p.drawPolyline([QPointF(x - d, r.top() + 4), QPointF(x + d, r.top() + h / 2),
+                                QPointF(x - d, r.bottom() - 4)])
+                x += self.STEP
+        p.restore()
+        text = f'{self.value} %'
+        f = p.font()
+        f.setPointSizeF(f.pointSizeF() * 0.9)
+        p.setFont(f)
+        for clip, color in ((fill, QColor('white')), (QRectF(fill.right(), r.top(), r.width(), r.height()),
+                                                      pal.text().color())):
+            p.save()
+            p.setClipRect(clip)
+            p.setPen(color)
+            p.drawText(r, Qt.AlignCenter, text)
+            p.restore()
+        p.end()
+
+
+def bar_direction(s):
+    """+1 charging, -1 discharging, 0 done / error / no current."""
+    if s['mode'] in (2, 20) or s['mode'] in DONE_MODES:
+        return 0
+    return 1 if s['ma'] >= PHASE_MIN_MA else -1 if s['ma'] <= -PHASE_MIN_MA else 0
+
+
 class SlotTile(QFrame):
     clicked = Signal(object)              # (device id, slot)
 
@@ -483,11 +571,7 @@ class SlotTile(QFrame):
         fb.setBold(True)
         self.big.setFont(fb)
         lay.addWidget(self.big)
-        self.bar = QProgressBar()             # charger's progress (%), shown once a task reports it
-        self.bar.setRange(0, 100)
-        self.bar.setFormat('%v %')
-        self.bar.setAlignment(Qt.AlignCenter)
-        self.bar.setFixedHeight(16)
+        self.bar = ProgressBar()              # charger's progress (%), shown once a task reports it
         self.bar.hide()
         bl = QHBoxLayout()
         bl.setContentsMargins(6, 0, 6, 0)
@@ -502,8 +586,6 @@ class SlotTile(QFrame):
     def set_color(self, color):
         self.color = color
         self.head.setStyleSheet(f'background:{color}; color:white; padding:3px;')
-        self.bar.setStyleSheet(f'QProgressBar {{ border: 1px solid #999; border-radius: 3px; }}'
-                               f'QProgressBar::chunk {{ background: {color}; }}')
 
     def set_selected(self, sel):
         self.setStyleSheet('SlotTile { border: 3px solid #3a7bd5; }' if sel else
@@ -539,8 +621,8 @@ class SlotTile(QFrame):
         else:
             self.lines.setText(f"{s['ma']} mA · {s['mah']} mAh\n{' · '.join(extra + [fmt_dur(s['secs'])])}")
         if s['progress'] or not self.bar.isHidden():        # chargers without % never show the bar
-            self.bar.setValue(max(0, min(100, s['progress'] or 0)))
             self.bar.show()
+            self.bar.set_state(s['progress'] or 0, self.color, bar_direction(s))
 
     def mousePressEvent(self, e):
         self.clicked.emit(self.key)
@@ -711,6 +793,24 @@ class SearchCombo(QComboBox):
         self.lineEdit().textEdited.connect(self._typed)
         self.lineEdit().editingFinished.connect(self._revert)
         self.lineEdit().setPlaceholderText(tr('type to search …'))
+        self.lineEdit().installEventFilter(self)
+
+    def eventFilter(self, obj, e):
+        """Entering the field (click or Tab) selects its text, so typing starts a new search right away."""
+        if obj is self.lineEdit():
+            if e.type() == QEvent.FocusIn and e.reason() != Qt.MouseFocusReason:
+                QTimer.singleShot(0, obj.selectAll)
+            elif e.type() == QEvent.MouseButtonRelease and self._select_on_release:
+                self._select_on_release = False             # the click itself places the cursor: select afterwards
+                obj.selectAll()
+        return super().eventFilter(obj, e)
+
+    _select_on_release = False
+
+    def focusInEvent(self, e):
+        # a click into the text field gives the focus to the combo box (the field's focus proxy), not to the field
+        self._select_on_release = e.reason() == Qt.MouseFocusReason
+        super().focusInEvent(e)
 
     def _typed(self, text):
         self.proxy.set_text(text)
@@ -721,6 +821,7 @@ class SearchCombo(QComboBox):
         self.proxy.set_text('')
         self.setCurrentIndex(row)
         self.setEditText(self.itemText(row))
+        self.lineEdit().selectAll()
 
     def _revert(self):
         if self.currentText() != self.itemText(self.currentIndex()):
@@ -1068,8 +1169,13 @@ def session_headers():
             'grade': tr('Rating'), 'dur': tr('Duration')}
 
 
-def make_table(headers):
+GRADE_RANK = {g: len(GRADES) - i for i, g in enumerate(GRADES)}          # sort key: worst grade first
+
+
+def make_table(headers, autofilter=False):
+    """autofilter: sortable, with a filter button in every column header (table.autofilter)."""
     t = QTableWidget(0, len(headers))
+    t.autofilter = AutoFilter(t) if autofilter else None
     t.setHorizontalHeaderLabels(headers)
     t.verticalHeader().hide()
     t.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -1080,16 +1186,30 @@ def make_table(headers):
     return t
 
 
+def select_by_id(table, ident):
+    """Select the row whose first cell carries this id (Qt.UserRole); rows may be sorted."""
+    for i in range(table.rowCount()):
+        if table.item(i, 0).data(Qt.UserRole) == ident:
+            table.selectRow(i)
+            return
+
+
 def fill_session_table(table, rows, cols):
     """rows from DB.sessions() / DB.battery_sessions(); cols: column keys (see session_headers)."""
     # ResizeToContents measures all rows again on every setItem of a shown table: refilling 500 sessions
     # took 77 s and froze the GUI. Measure once at the end instead.
+    # Sorting is switched off while filling as well, otherwise rows move between the setItem calls.
     header = table.horizontalHeader()
     header.setSectionResizeMode(QHeaderView.Interactive)
+    sorting = table.isSortingEnabled()
+    table.setSortingEnabled(False)
     try:
         _fill_session_rows(table, rows, cols)
     finally:
+        table.setSortingEnabled(sorting)
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
+    if table.autofilter:
+        table.autofilter.apply()
 
 
 def _fill_session_rows(table, rows, cols):
@@ -1099,16 +1219,26 @@ def _fill_session_rows(table, rows, cols):
         nominal = d['nominal'] or NOMINAL.get(d['size'], 0)
         pct = f"{100 * d['discharge_mah'] / nominal:.0f} %" if d['discharge_mah'] and nominal else ''
         note = note_of(d)
-        vals = {'start': fmt_t(d['start']), 'dev': d['dev_name'] or '', 'slot': d['slot'] + 1,
-                'task': tr_data(d['task']), 'status': tr_data(d['status']),
-                'battery': battery_text(d['battery_id'], d['battery_name']),
-                'detected': ' '.join(x for x in (d['chem'], d['size']) if x), 'nominal': nominal or '',
-                'dis': d['discharge_mah'] or '', 'pct': pct, 'chg': d['charge_mah'] or '',
-                'rmin': d['res_min'] or '', 'tmax': d['temp_max'] or '', 'grade': tr_data(d['grade'] or NO_GRADE),
-                'dur': fmt_dur(d['end'] - d['start'])}
+        dis = d['discharge_mah']
+        # column -> (text, sort key)
+        vals = {'start': (fmt_t(d['start']), d['start']), 'dev': (d['dev_name'] or '', (d['dev_name'] or '').lower()),
+                'slot': (d['slot'] + 1, d['slot']), 'task': (tr_data(d['task']), tr_data(d['task']).lower()),
+                'status': (tr_data(d['status']), tr_data(d['status']).lower()),
+                'battery': (battery_text(d['battery_id'], d['battery_name']), d['battery_id']),
+                'detected': (' '.join(x for x in (d['chem'], d['size']) if x),
+                             ' '.join(x for x in (d['chem'], d['size']) if x).lower()),
+                'nominal': (nominal or '', nominal or None), 'dis': (dis or '', dis or None),
+                'pct': (pct, 100 * dis / nominal if dis and nominal else None),
+                'chg': (d['charge_mah'] or '', d['charge_mah'] or None), 'rmin': (d['res_min'] or '', d['res_min'] or None),
+                'tmax': (d['temp_max'] or '', d['temp_max'] or None),
+                'grade': (tr_data(d['grade'] or NO_GRADE), GRADE_RANK.get(d['grade'], 0)),
+                'dur': (fmt_dur(d['end'] - d['start']), d['end'] - d['start'])}
         for j, c in enumerate(cols):
-            it = QTableWidgetItem()
-            it.setData(Qt.DisplayRole, vals[c])
+            text, key = vals[c]
+            it = SortItem(str(text))
+            it.setData(SORT_ROLE, key)                                  # None (empty) sorts first
+            if c == 'start':
+                it.setData(FILTER_ROLE, fmt_day(d['start']))        # filter by day, not by minute
             if j == 0:
                 it.setData(Qt.UserRole, d['id'])
                 it.setToolTip(note)
@@ -1136,10 +1266,18 @@ class BatteryTab(QWidget):
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, fn=fn: fn())
             btns.addWidget(b)
-        btns.addStretch()
+        btns.addSpacing(20)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(tr('Search (ID, maker, model, type, description) …'))
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self._filter)
+        btns.addWidget(self.search, 1)
         left.addLayout(btns)
         self.table = make_table([tr('ID'), tr('Maker'), tr('Model'), tr('Capacity'), tr('Type'), tr('Sessions'),
-                                 tr('Last mAh'), tr('Rating'), tr('Description')])
+                                 tr('Last mAh'), tr('Rating'), tr('Last measured'), tr('Last charged'),
+                                 tr('Description')], autofilter=True)
+        self.table.autofilter.extra = self._matches
+        self.table.sortByColumn(0, Qt.AscendingOrder)
         self.table.itemSelectionChanged.connect(self.show_history)
         self.table.cellDoubleClicked.connect(lambda *_: self.edit())
         left.addWidget(self.table)
@@ -1148,7 +1286,8 @@ class BatteryTab(QWidget):
         self.hist_title = QLabel()
         right.addWidget(self.hist_title)
         heads = session_headers()
-        self.hist = make_table([heads[c] for c in self.HIST_COLS])
+        self.hist = make_table([heads[c] for c in self.HIST_COLS], autofilter=True)
+        self.hist.sortByColumn(0, Qt.DescendingOrder)
         self.hist.cellDoubleClicked.connect(
             lambda r, _c: self.open_session.emit(self.hist.item(r, 0).data(Qt.UserRole)))
         right.addWidget(self.hist)
@@ -1164,26 +1303,45 @@ class BatteryTab(QWidget):
         select = select if select is not None else self.selected()
         rows = self.db.batteries()
         self.table.blockSignals(True)
+        self.table.setSortingEnabled(False)       # rows would move while being filled
         self.table.setRowCount(len(rows))
-        for i, (bid, _name, maker, cap, typ, desc, n, last, grade, _mid, _mmaker, mname) in enumerate(rows):
+        for i, (bid, name, maker, cap, typ, desc, n, last, grade, _mid, _mmaker, mname, t_meas,
+                t_chg) in enumerate(rows):
             pct = f' ({100 * last / cap:.0f} %)' if last and cap else ''
-            vals = [bid, maker, mname or '', f'{cap} mAh' if cap else '', typ, n,
-                    f'{last}{pct}' if last else '', tr_data(grade or ''), (desc or '').replace('\n', ' ')]
-            for j, v in enumerate(vals):
-                it = QTableWidgetItem()
-                it.setData(Qt.DisplayRole, v)
+            cells = [(bid, bid), (maker, maker.lower()), (mname or '', (mname or '').lower()),
+                     (f'{cap} mAh' if cap else '', cap or None), (typ, typ.lower()), (n, n),
+                     (f'{last}{pct}' if last else '', last), (tr_data(grade or ''), GRADE_RANK.get(grade)),
+                     (fmt_t(t_meas), t_meas), (fmt_t(t_chg), t_chg),
+                     ((desc or '').replace('\n', ' '), (desc or '').lower())]
+            for j, (text, key) in enumerate(cells):
+                it = SortItem(str(text))
+                it.setData(SORT_ROLE, key)
                 if j == 0:
                     it.setData(Qt.UserRole, bid)
+                    it.setData(SEARCH_ROLE, name)             # batteries without a model: "maker type"
+                if j in (8, 9):
+                    it.setData(FILTER_ROLE, fmt_day(key))
                 if j == 7 and grade:
                     it.setBackground(QColor(GRADE_COLORS.get(grade, '#888')))
                     it.setForeground(QColor('white'))
-                if j == 8:
+                if j == 10:
                     it.setToolTip(desc or '')
                 self.table.setItem(i, j, it)
-            if bid == select:
-                self.table.selectRow(i)
+        self.table.setSortingEnabled(True)
+        select_by_id(self.table, select)
+        self._filter()
         self.table.blockSignals(False)
         self.show_history()
+
+    def _matches(self, row):
+        """Search field: every word in ID, maker, model, type, description or name."""
+        words = self.search.text().lower().split()
+        text = ' '.join([self.table.item(row, j).text() for j in (0, 1, 2, 4, 10)] +
+                        [self.table.item(row, 0).data(SEARCH_ROLE) or '']).lower()
+        return all(w in text for w in words)
+
+    def _filter(self):
+        self.table.autofilter.apply()
 
     def show_history(self):
         bid = self.selected()
@@ -1376,7 +1534,7 @@ class PlusTab(QFrame):
     def __init__(self):
         super().__init__()
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip(tr('Supported chargers, Bluetooth search, language'))
+        self.setToolTip(tr('Supported chargers, Bluetooth search'))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 2, 14, 2)
         lab = QLabel('+')
@@ -1394,7 +1552,7 @@ class PlusTab(QFrame):
 
 
 class InfoDialog(QDialog):
-    """Supported chargers, what is connected, Bluetooth search, language."""
+    """Supported chargers, what is connected, Bluetooth search."""
 
     @staticmethod
     def supported():
@@ -1447,18 +1605,6 @@ class InfoDialog(QDialog):
         self.a4.setEnabled(parent.source != 'offline')
         self.a4.currentIndexChanged.connect(self._set_a4)
         row.addWidget(self.a4)
-        row.addSpacing(30)
-        row.addWidget(QLabel(tr('Language:')))
-        self.lang = QComboBox()
-        self.lang.addItem(tr('Automatic (system)'), 'auto')
-        for k, name in LANGUAGES.items():
-            self.lang.addItem(name, k)
-        self.lang.setCurrentIndex(max(self.lang.findData(QSettings('battbench', 'battbench').value('lang', 'auto')), 0))
-        self.lang.currentIndexChanged.connect(self._set_lang)
-        row.addWidget(self.lang)
-        self.lang_note = QLabel()
-        self.lang_note.setStyleSheet('color: palette(placeholder-text);')
-        row.addWidget(self.lang_note)
         row.addStretch(1)
         lay.addLayout(row)
         lay.addWidget(QLabel('<b>' + tr('Connected') + '</b>'))
@@ -1499,10 +1645,6 @@ class InfoDialog(QDialog):
         QSettings('battbench', 'battbench').setValue('a4', mode)
         self.main.worker.cmds.put(('a4', mode))
 
-    def _set_lang(self):
-        QSettings('battbench', 'battbench').setValue('lang', self.lang.currentData())
-        self.lang_note.setText(tr('takes effect after a restart'))
-
     def _scan(self):
         ble = self.main.worker.ble
         if ble:
@@ -1530,6 +1672,60 @@ class InfoDialog(QDialog):
                  tr('connecting …') if addr in ble.active else tr('found')
             found.append(tr('{} {} (signal {} dBm) – {}').format(f['name'], addr, f['rssi'], st))
         self.bt_list.setText('<br>'.join(found) or tr('No Bluetooth charger found yet.'))
+
+
+class SettingsTab(QWidget):
+    """User settings (stored with QSettings)."""
+
+    def __init__(self):
+        super().__init__()
+        form = QFormLayout(self)
+        row = QHBoxLayout()
+        self.lang = QComboBox()
+        self.lang.addItem(tr('Automatic (system)'), 'auto')
+        for k, name in LANGUAGES.items():
+            self.lang.addItem(name, k)
+        self.lang.setCurrentIndex(max(self.lang.findData(QSettings('battbench', 'battbench').value('lang', 'auto')), 0))
+        self.lang.currentIndexChanged.connect(self._set_lang)
+        row.addWidget(self.lang)
+        self.lang_note = QLabel()
+        self.lang_note.setStyleSheet('color: palette(placeholder-text);')
+        row.addWidget(self.lang_note)
+        row.addStretch(1)
+        form.addRow(tr('Language:'), row)
+
+    def _set_lang(self):
+        QSettings('battbench', 'battbench').setValue('lang', self.lang.currentData())
+        self.lang_note.setText(tr('takes effect after a restart'))
+
+
+class InfoTab(QWidget):
+    """Version, author, links, database location."""
+
+    def __init__(self, db_path):
+        super().__init__()
+        lay = QHBoxLayout(self)
+        icon = QLabel()
+        icon.setPixmap(QIcon(ICON).pixmap(96, 96))
+        icon.setAlignment(Qt.AlignTop)
+        lay.addWidget(icon)
+        lay.addSpacing(16)
+        def link(url):
+            return f"<a href='{url}'>{url.split('//')[1]}</a>"
+
+        rows = [(tr('Version:'), full_version()), (tr('Author:'), f'{AUTHOR}, {link(WEBSITE)}'),
+                (tr('Source code:'), link(SOURCE)), (tr('License:'), 'GNU GPL v3'),
+                (tr('Database:'), os.path.abspath(db_path))]
+        text = QLabel(
+            '<h2>BattBench</h2><p>' + tr('Battery test bench: tracking and analysis of rechargeable batteries') +
+            '</p><table cellspacing="4">' + ''.join(f'<tr><td>{a}</td><td>{b}</td></tr>' for a, b in rows) +
+            "</table><p style='color: gray'>" +
+            tr('Not affiliated with ISDT or SkyRC. Never leave charging batteries unattended.') + '</p>')
+        text.setTextFormat(Qt.RichText)
+        text.setOpenExternalLinks(True)
+        text.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        text.setAlignment(Qt.AlignTop)
+        lay.addWidget(text, 1)
 
 
 class DeviceTab(QWidget):
@@ -1648,7 +1844,8 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         heads = session_headers()
-        self.table = make_table([heads[c] for c in self.COLS])
+        self.table = make_table([heads[c] for c in self.COLS], autofilter=True)
+        self.table.sortByColumn(0, Qt.DescendingOrder)
         self.table.currentCellChanged.connect(self._row_changed)    # click or arrow keys
         self.table.cellClicked.connect(self._row_clicked)           # same row again (e.g. after a slot view)
         self.tabs.addTab(self.table, tr('Sessions'))
@@ -1663,6 +1860,8 @@ class MainWindow(QMainWindow):
         self.dtab = DeviceTab(self.db)
         self.dtab.changed.connect(self.devices_renamed)
         self.tabs.addTab(self.dtab, tr('Chargers'))
+        self.tabs.addTab(SettingsTab(), tr('Settings'))
+        self.tabs.addTab(InfoTab(db_path), tr('Info'))
         vsplit.addWidget(self.tabs)
         vsplit.setSizes([200, 500, 250])
         root.addWidget(vsplit, 1)
@@ -1896,9 +2095,7 @@ class MainWindow(QMainWindow):
         self.table.blockSignals(True)              # refilling / reselecting must not open a session
         fill_session_table(self.table, rows, self.COLS)
         if self.hist_id is not None:
-            for i, r in enumerate(rows):
-                if r[0] == self.hist_id:
-                    self.table.selectRow(i)
+            select_by_id(self.table, self.hist_id)
         self.table.blockSignals(False)
         self.btab.load()
 
@@ -1956,7 +2153,7 @@ class MainWindow(QMainWindow):
 
 
 def main():
-    ap = argparse.ArgumentParser(prog='battbench', description=f'BattBench {__version__}')
+    ap = argparse.ArgumentParser(prog='battbench', description=f'BattBench {full_version()}')
     ap.add_argument('--offline', action='store_true', help='only view the database, no chargers')
     ap.add_argument('--db', default=default_db(), help='database file (default: %(default)s)')
     ap.add_argument('--a4', choices=A4_MODES, help='read the A4 Air over usb, bt or both '

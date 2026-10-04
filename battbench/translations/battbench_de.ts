@@ -20,6 +20,10 @@
         <translation>%d.%m. %H:%M</translation>
     </message>
     <message>
+        <source>%Y-%m-%d</source>
+        <translation>%d.%m.%Y</translation>
+    </message>
+    <message>
         <source>Loading database …</source>
         <translation>Lade Datenbank …</translation>
     </message>
@@ -312,6 +316,10 @@
         <translation>Löschen</translation>
     </message>
     <message>
+        <source>Search (ID, maker, model, type, description) …</source>
+        <translation>Suchen (ID, Hersteller, Modell, Typ, Beschreibung) …</translation>
+    </message>
+    <message>
         <source>ID</source>
         <translation>ID</translation>
     </message>
@@ -334,6 +342,14 @@
     <message>
         <source>Last mAh</source>
         <translation>zuletzt mAh</translation>
+    </message>
+    <message>
+        <source>Last measured</source>
+        <translation>zuletzt gemessen</translation>
+    </message>
+    <message>
+        <source>Last charged</source>
+        <translation>zuletzt geladen</translation>
     </message>
     <message>
         <source>Description</source>
@@ -382,10 +398,6 @@ Die Vorgänge bleiben erhalten, sind dann aber keinem Akku mehr zugeordnet.</tra
 Batteries of this model keep maker, type and capacity.</source>
         <translation>Modell {} löschen?
 Akkus dieses Modells behalten Hersteller, Typ und Kapazität.</translation>
-    </message>
-    <message>
-        <source>Supported chargers, Bluetooth search, language</source>
-        <translation>Unterstützte Ladegeräte, Bluetooth-Suche, Sprache</translation>
     </message>
     <message>
         <source>Not tested on a real charger.</source>
@@ -472,6 +484,10 @@ Akkus dieses Modells behalten Hersteller, Typ und Kapazität.</translation>
         <translation>{} – {} über {}</translation>
     </message>
     <message>
+        <source>Supported chargers, Bluetooth search</source>
+        <translation>Unterstützte Ladegeräte, Bluetooth-Suche</translation>
+    </message>
+    <message>
         <source>none</source>
         <translation>keins</translation>
     </message>
@@ -502,6 +518,34 @@ Akkus dieses Modells behalten Hersteller, Typ und Kapazität.</translation>
     <message>
         <source>No Bluetooth charger found yet.</source>
         <translation>Noch kein Bluetooth-Ladegerät gefunden.</translation>
+    </message>
+    <message>
+        <source>Version:</source>
+        <translation>Version:</translation>
+    </message>
+    <message>
+        <source>Author:</source>
+        <translation>Autor:</translation>
+    </message>
+    <message>
+        <source>Source code:</source>
+        <translation>Quellcode:</translation>
+    </message>
+    <message>
+        <source>License:</source>
+        <translation>Lizenz:</translation>
+    </message>
+    <message>
+        <source>Database:</source>
+        <translation>Datenbank:</translation>
+    </message>
+    <message>
+        <source>Battery test bench: tracking and analysis of rechargeable batteries</source>
+        <translation>Akku-Prüfstand: Tracking und Analyse von Akkus</translation>
+    </message>
+    <message>
+        <source>Not affiliated with ISDT or SkyRC. Never leave charging batteries unattended.</source>
+        <translation>Keine Verbindung zu ISDT oder SkyRC. Ladende Akkus nie unbeaufsichtigt lassen.</translation>
     </message>
     <message>
         <source>Rename …</source>
@@ -546,6 +590,14 @@ Akkus dieses Modells behalten Hersteller, Typ und Kapazität.</translation>
     <message>
         <source>Models</source>
         <translation>Modelle</translation>
+    </message>
+    <message>
+        <source>Settings</source>
+        <translation>Einstellungen</translation>
+    </message>
+    <message>
+        <source>Info</source>
+        <translation>Info</translation>
     </message>
     <message>
         <source>Starting …</source>
@@ -634,6 +686,26 @@ Akkus dieses Modells behalten Hersteller, Typ und Kapazität.</translation>
     <message>
         <source>no answer to the status query (not an MC3000 / MC5000?)</source>
         <translation>keine Antwort auf die Statusabfrage (kein MC3000 / MC5000?)</translation>
+    </message>
+    <message>
+        <source>Sort ascending</source>
+        <translation>Aufsteigend sortieren</translation>
+    </message>
+    <message>
+        <source>Sort descending</source>
+        <translation>Absteigend sortieren</translation>
+    </message>
+    <message>
+        <source>Search …</source>
+        <translation>Suchen …</translation>
+    </message>
+    <message>
+        <source>(Select all)</source>
+        <translation>(Alle auswählen)</translation>
+    </message>
+    <message>
+        <source>(empty)</source>
+        <translation>(leer)</translation>
     </message>
 </context>
 <context>

@@ -14,7 +14,13 @@ function Run($exe, [string[]]$arguments) {
 }
 
 $version = & $py -c 'import battbench; print(battbench.__version__)'
-Write-Host "BattBench $version"
+# year.month[.bugfix] -> four numbers for the Windows version resource (2026.10 -> 2026.10.0.0)
+$parts = @($version.Split('.')) + @('0', '0', '0')
+$viversion = ($parts[0..3]) -join '.'
+# the installed app shows the commit it was built from (see battbench/version.py)
+$git = & $py -c 'from battbench.version import git_info; print(git_info())'
+Set-Content -Encoding utf8 -Path 'battbench\_build.py' -Value "GIT = '$git'"
+Write-Host "BattBench $version ($git)"
 
 Run $py @('-m', 'pip', 'install', '--quiet', '--upgrade', 'pyinstaller')
 Run $py @('battbench\translations\update.py')
@@ -28,5 +34,5 @@ if (-not $nsis) {
               "$env:LOCALAPPDATA\Programs\NSIS\makensis.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
 if (-not $nsis) { throw 'makensis not found - install NSIS 3 (winget install NSIS.NSIS).' }
-Run $nsis @("/DVERSION=$version", 'packaging\installer.nsi')
+Run $nsis @("/DVERSION=$version", "/DVIVERSION=$viversion", 'packaging\installer.nsi')
 Write-Host "Done: build\BattBench-$version-setup.exe"

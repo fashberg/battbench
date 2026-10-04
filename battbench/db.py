@@ -276,8 +276,8 @@ class DB:
 
     # ------------------------------------------------------------- batteries
     def batteries(self):
-        """All batteries with number of sessions, the latest measured discharge capacity / grade and
-        the model (id, maker, name)."""
+        """All batteries with number of sessions, the latest measured discharge capacity / grade, the model
+        (id, maker, name) and the end of the last measurement (session with a discharge capacity) / last charge."""
         return self.con.execute(
             'SELECT b.id, b.name, b.maker, b.capacity, b.type, b.description, '
             ' (SELECT COUNT(*) FROM sessions s WHERE s.battery_id=b.id), '
@@ -285,7 +285,9 @@ class DB:
             '  ORDER BY s.start DESC LIMIT 1), '
             ' (SELECT s.grade FROM sessions s WHERE s.battery_id=b.id AND s.discharge_mah > 0 '
             '  ORDER BY s.start DESC LIMIT 1), '
-            ' b.model_id, m.maker, m.name '
+            ' b.model_id, m.maker, m.name, '
+            ' (SELECT MAX(s.end) FROM sessions s WHERE s.battery_id=b.id AND s.discharge_mah > 0), '
+            ' (SELECT MAX(s.end) FROM sessions s WHERE s.battery_id=b.id AND s.charge_mah > 0) '
             'FROM batteries b LEFT JOIN models m ON m.id = b.model_id ORDER BY b.id').fetchall()
 
     def battery(self, battery_id):
