@@ -13,9 +13,18 @@ BattBench verändert nie etwas am Ladegerät: Starten, Stoppen und Einstellungen
 - Das offizielle Update-Programm **ISD Go** schließen: Es belegt die Ladegeräte über USB exklusiv.
 - Die Handy-App **ISD Link** beenden (oder Bluetooth am Handy ausschalten). Ein ISDT-Air-Ladegerät nimmt nur eine
   Bluetooth-Verbindung an und ist für andere unsichtbar, solange das Handy verbunden ist.
-- Ein USB-Anschluss am PC liefert wenig Leistung. Der N8 lädt dann mit nur etwa 100 mA pro Schacht, wenn mehrere
-  Schächte belegt sind; eine Analyse von 8 Akkus dauert so leicht zwei Tage. Ein QC-3.0- oder USB-PD-Netzteil
-  vermeidet das.
+- Ladegeräte mit Strom über USB (z. B. der N8): siehe *Stromversorgung* unten.
+
+### Stromversorgung
+- Ein Ladegerät, das seinen Strom über das USB-Kabel bekommt (z. B. der N8), bekommt **vom PC vermutlich zu wenig
+  Leistung**: Ein USB-Anschluss am PC liefert meist nur 5 V mit 0,5–1,5 A, ohne USB Power Delivery. Der N8 lädt dann
+  mit nur etwa 100 mA pro Schacht, sobald etwa vier Schächte laden (Entladen ist nicht betroffen); eine Analyse von
+  8 Akkus dauert so leicht zwei Tage.
+- Besser: das Ladegerät über einen **USB-C-Hub mit Power Delivery** (PD) anschließen. Ein USB-PD-Netzteil versorgt den
+  Hub, das Kabel des Hubs geht zum PC – das Ladegerät bekommt seine volle Leistung, und BattBench liest es trotzdem.
+- Nicht jeder Hub gibt PD an jeden Anschluss weiter (viele geben die volle Leistung nur an den Computer). Bleibt der
+  Ladestrom niedrig, einen anderen Anschluss oder einen anderen Hub probieren.
+- Ladegeräte mit eigenem Netzteil oder DC-Eingang sind nicht betroffen.
 
 ### Akkus nummerieren und Modelle
 - Schreib eine **Nummer** auf jeden Akku (z. B. mit einem Lackstift) und leg ihn im Reiter *Akkus* mit

@@ -13,8 +13,18 @@ BattBench never changes anything on the charger: start, stop and settings are do
 - Close the official **ISD Go** updater: it opens the chargers over USB exclusively.
 - Quit the **ISD Link** phone app (or switch off Bluetooth on the phone). An ISDT Air charger accepts only one
   Bluetooth connection and is invisible to others while the phone is connected.
-- A PC USB port delivers little power. The N8 then charges with only about 100 mA per slot when several slots are
-  busy, so a full analysis of 8 cells can take two days. A QC 3.0 / USB-PD power supply avoids this.
+- Chargers powered over USB (e.g. the N8): see *Power supply* below.
+
+### Power supply
+- A charger that gets its power from the USB cable (e.g. the N8) most likely gets **too little power from the PC**:
+  a PC USB port usually supplies only 5 V at 0.5–1.5 A, without USB Power Delivery. The N8 then charges with only
+  about 100 mA per slot once about four slots charge (discharging is not affected), so an analysis of 8 cells can
+  take two days.
+- Better: connect the charger through a **USB-C hub with Power Delivery** (PD). A USB-PD power supply feeds the hub,
+  the hub's upstream cable goes to the PC – the charger gets its full power and BattBench still reads it.
+- Not every hub passes PD on to every port (many give the full power only to the computer). If the charge current
+  stays low, try another port or another hub.
+- Chargers with their own mains or DC power supply are not affected.
 
 ### Numbering batteries and models
 - Write a **number** on each cell (e.g. with a paint marker) and create it in the tab *Batteries* with *New battery …*
