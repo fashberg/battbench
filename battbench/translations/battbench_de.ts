@@ -400,6 +400,14 @@
         <translation>Neuer Akku …</translation>
     </message>
     <message>
+        <source>session</source>
+        <translation>Vorgang</translation>
+    </message>
+    <message>
+        <source>sessions</source>
+        <translation>Vorgänge</translation>
+    </message>
+    <message>
         <source>Edit …</source>
         <translation>Bearbeiten …</translation>
     </message>
@@ -540,10 +548,6 @@
         <translation>&lt;b&gt;Air-Ladegerät wird nicht gefunden?&lt;/b&gt; Die App &lt;b&gt;„ISD Link“&lt;/b&gt; auf dem Handy beenden (oder am Handy Bluetooth ausschalten). Das Ladegerät nimmt nur eine Bluetooth-Verbindung an und ist für andere unsichtbar, solange das Handy verbunden ist. Umgekehrt kommt ISD Link nicht dran, solange BattBench verbunden ist.</translation>
     </message>
     <message>
-        <source>Delete all deleted entries for good ({} batteries, {} models)? Sessions and readings are kept. This cannot be undone.</source>
-        <translation>Alle gelöschten Einträge endgültig löschen ({} Akkus, {} Modelle)? Vorgänge und Messwerte bleiben erhalten. Das lässt sich nicht rückgängig machen.</translation>
-    </message>
-    <message>
         <source>takes effect after a restart</source>
         <translation>gilt nach einem Neustart</translation>
     </message>
@@ -628,10 +632,6 @@
         <translation>Noch kein Bluetooth-Ladegerät gefunden.</translation>
     </message>
     <message>
-        <source>Show deleted batteries and models (grey, “(deleted)”)</source>
-        <translation>Gelöschte Akkus und Modelle anzeigen (grau, „(gelöscht)“)</translation>
-    </message>
-    <message>
         <source>Deleting an entry shown as deleted removes it for good.</source>
         <translation>Wird ein als gelöscht angezeigter Eintrag gelöscht, ist er endgültig weg.</translation>
     </message>
@@ -666,6 +666,42 @@
     <message>
         <source>Database:</source>
         <translation>Datenbank:</translation>
+    </message>
+    <message>
+        <source>Show deleted sessions, batteries and models (grey, “(deleted)”)</source>
+        <translation>Gelöschte Vorgänge, Akkus und Modelle anzeigen (grau, „(gelöscht)“)</translation>
+    </message>
+    <message>
+        <source>Optimise database</source>
+        <translation>Datenbank optimieren</translation>
+    </message>
+    <message>
+        <source>Rewrites the database file without unused space (SQLite VACUUM). Takes a moment.</source>
+        <translation>Schreibt die Datenbankdatei ohne ungenutzten Platz neu (SQLite VACUUM). Dauert einen Moment.</translation>
+    </message>
+    <message>
+        <source>File size</source>
+        <translation>Dateigröße</translation>
+    </message>
+    <message>
+        <source>Readings</source>
+        <translation>Messwerte</translation>
+    </message>
+    <message>
+        <source>({} deleted)</source>
+        <translation>({} gelöscht)</translation>
+    </message>
+    <message>
+        <source>Not possible right now: {}</source>
+        <translation>Gerade nicht möglich: {}</translation>
+    </message>
+    <message>
+        <source>Database optimised: {} → {}.</source>
+        <translation>Datenbank optimiert: {} → {}.</translation>
+    </message>
+    <message>
+        <source>Delete all deleted entries for good ({} sessions, {} batteries, {} models)? The readings are kept. This cannot be undone.</source>
+        <translation>Alle gelöschten Einträge endgültig löschen ({} Vorgänge, {} Akkus, {} Modelle)? Die Messwerte bleiben erhalten. Das lässt sich nicht rückgängig machen.</translation>
     </message>
     <message>
         <source>Battery test bench: tracking and analysis of rechargeable batteries</source>

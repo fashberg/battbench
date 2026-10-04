@@ -90,6 +90,9 @@ Kapazitätsmessung, aber mit sehr hohem Widerstand (ab 1000 mΩ NiMH / 400 mΩ L
 - **Tabellen** (unten): Klick auf einen Spaltentitel sortiert; der Trichter im Spaltentitel filtert wie in einer
   Tabellenkalkulation. *Vorgänge* listet alle Vorgänge, *Akkus* deine Akkus mit ihrem Verlauf rechts, *Modelle* die
   Modellliste, *Ladegeräte* die bekannten Ladegeräte (hier umbenennen – der Name wird nur in BattBench gespeichert).
+- **Löschen**: Rechtsklick auf Vorgänge, Akkus oder Modelle (Strg / Umschalt wählt mehrere). Gelöschte Einträge werden
+  nur ausgeblendet; in den *Einstellungen* lassen sie sich wieder anzeigen (grau) – erneutes Löschen entfernt sie
+  endgültig.
 
 ### Unterstützte Ladegeräte
 | Ladegerät | Verbindung | Schächte | Getestet |
@@ -106,5 +109,6 @@ Mit „–“ markierte Ladegeräte werden laut Protokoll unterstützt, wurden a
 ### Deine Daten
 Alle Messwerte, Vorgänge, Akkus und Modelle liegen in einer Datenbankdatei (SQLite) auf deinem Rechner: bei der
 installierten App in `%LOCALAPPDATA%\BattBench\battbench.db`, beim Start aus dem Quellcode in `battbench.db` im
-Projektordner. Der Reiter *Info* zeigt, wo sie liegt. Zum Sichern die Datei kopieren, während BattBench geschlossen
-ist. Es wird nichts irgendwohin gesendet.
+Projektordner. Der Reiter *Info* zeigt, wo sie liegt, die *Einstellungen* zeigen Größe und Anzahl der Einträge;
+*Datenbank optimieren* verkleinert dort die Datei. Zum Sichern die Datei kopieren, während BattBench geschlossen ist.
+Es wird nichts irgendwohin gesendet.

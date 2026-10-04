@@ -9,6 +9,7 @@ Start:  .venv\\Scripts\\python -m battbench [--offline] [--db battbench.db]   (o
 """
 import argparse
 import os
+import sqlite3
 import queue
 import sys
 import threading
@@ -19,8 +20,8 @@ from datetime import datetime
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import (QByteArray, QEvent, QObject, QPointF, QRectF, QRegularExpression, QSettings, QSize,
-                            QSortFilterProxyModel, Qt, QThread, QTimer, Signal)
+from PySide6.QtCore import (QByteArray, QEvent, QLocale, QObject, QPointF, QRectF, QRegularExpression, QSettings,
+                            QSize, QSortFilterProxyModel, Qt, QThread, QTimer, Signal)
 from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QPainter, QPen, QPixmap,
                            QRegularExpressionValidator)
 from PySide6.QtSvg import QSvgRenderer
@@ -114,6 +115,18 @@ def via_pixmap(vias, color, size=14):
             p, QRectF(i * (size + 2), 0, size, size))
     p.end()
     return pm
+
+
+def fmt_int(n):
+    """Whole number with the thousands separator of the UI language (661,139 / 661.139)."""
+    return QLocale(i18n.current).toString(int(n))
+
+
+def fmt_size(n):
+    for unit in ('B', 'KB', 'MB', 'GB'):
+        if n < 1024 or unit == 'GB':
+            return f'{n:.0f} {unit}' if unit == 'B' else QLocale(i18n.current).toString(float(n), 'f', 1) + ' ' + unit
+        n /= 1024
 
 
 def fmt_day(t):
@@ -1845,7 +1858,8 @@ def selected_ids(table):
 
 
 def row_menu(table, edit, delete):
-    """Right click on a row: Edit … / Delete; with several rows selected (Ctrl / Shift) only Delete."""
+    """Right click on a row: Edit … (if edit is given) / Delete; with several rows selected (Ctrl / Shift) only
+    Delete."""
     table.setContextMenuPolicy(Qt.CustomContextMenu)
 
     def show(pos):
@@ -1856,7 +1870,7 @@ def row_menu(table, edit, delete):
             table.selectRow(row)
         n = len(selected_ids(table))
         menu = QMenu(table)
-        if n == 1:
+        if n == 1 and edit:
             menu.addAction(tr('Edit …'), edit)
         menu.addAction(tr('Delete') if n == 1 else tr('Delete ({})').format(n), delete)
         menu.exec(table.viewport().mapToGlobal(pos))
@@ -1922,7 +1936,12 @@ def _fill_session_rows(table, rows, cols):
                 it.setData(FILTER_ROLE, fmt_day(d['start']))        # filter by day, not by minute
             if j == 0:
                 it.setData(Qt.UserRole, d['id'])
+                it.setData(DELETED_ROLE, bool(d['deleted']))
                 it.setToolTip(note)
+            if d['deleted']:
+                mark_deleted([it])
+                if j == 0:
+                    it.setText(f"{text} {tr('(deleted)')}")
             if c == 'grade':
                 it.setBackground(QColor(GRADE_COLORS.get(d['grade'] or NO_GRADE, '#888')))
                 it.setForeground(QColor('white'))
@@ -2040,7 +2059,8 @@ class BatteryTab(QWidget):
         b = self.db.battery(bid) if bid is not None else None
         self.hist_title.setText('<b>' + tr('History') + (f" #{b['id']} {b['name']}</b>" if b else
                                                          '</b> ' + tr('(choose a battery)')))
-        fill_session_table(self.hist, self.db.battery_sessions(bid) if b else [], self.HIST_COLS)
+        fill_session_table(self.hist, self.db.battery_sessions(bid, deleted=show_deleted()) if b else [],
+                           self.HIST_COLS)
 
     def _run(self, dlg):
         ok = dlg.exec()
@@ -2405,7 +2425,7 @@ class SettingsTab(QWidget):
         row.addWidget(self.lang_note)
         row.addStretch(1)
         form.addRow(tr('Language:'), row)
-        self.show_del = QCheckBox(tr('Show deleted batteries and models (grey, “(deleted)”)'))
+        self.show_del = QCheckBox(tr('Show deleted sessions, batteries and models (grey, “(deleted)”)'))
         self.show_del.setChecked(show_deleted())
         self.show_del.setToolTip(tr('Deleting an entry shown as deleted removes it for good.'))
         self.show_del.toggled.connect(self._set_show_deleted)
@@ -2416,20 +2436,60 @@ class SettingsTab(QWidget):
         row.addWidget(purge)
         row.addStretch(1)
         form.addRow('', row)
+        self.stats = QLabel()
+        self.stats.setTextFormat(Qt.RichText)
+        form.addRow(tr('Database:'), self.stats)
+        optimize = QPushButton(tr('Optimise database'))
+        optimize.setToolTip(tr('Rewrites the database file without unused space (SQLite VACUUM). Takes a moment.'))
+        optimize.clicked.connect(self._optimize)
+        row = QHBoxLayout()
+        row.addWidget(optimize)
+        row.addStretch(1)
+        form.addRow('', row)
+        self.refresh_stats()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.refresh_stats()
+
+    def refresh_stats(self):
+        n = self.db.stats()
+        ds, db_, dm = self.db.deleted_counts()
+        rows = [(tr('File size'), fmt_size(self.db.size())), (tr('Readings'), fmt_int(n['samples'])),
+                (tr('Sessions'), fmt_int(n['sessions']) + (' ' + tr('({} deleted)').format(ds) if ds else '')),
+                (tr('Phases'), fmt_int(n['phases'])),
+                (tr('Batteries'), fmt_int(n['batteries']) + (' ' + tr('({} deleted)').format(db_) if db_ else '')),
+                (tr('Models'), fmt_int(n['models']) + (' ' + tr('({} deleted)').format(dm) if dm else '')),
+                (tr('Chargers'), fmt_int(n['devices']))]
+        self.stats.setText('<table cellspacing="2">' + ''.join(
+            f'<tr><td>{a}</td><td align="right">&nbsp;&nbsp;{b}</td></tr>' for a, b in rows) + '</table>')
+
+    def _optimize(self):
+        before = self.db.size()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self.db.optimize()
+        except sqlite3.Error as e:                          # e.g. busy: the worker is writing right now
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, tr('Optimise database'), tr('Not possible right now: {}').format(e))
+            return
+        QApplication.restoreOverrideCursor()
+        self.refresh_stats()
+        QMessageBox.information(self, tr('Optimise database'), tr('Database optimised: {} → {}.').format(
+            fmt_size(before), fmt_size(self.db.size())))
 
     def _set_show_deleted(self, on):
         QSettings('battbench', 'battbench').setValue('show_deleted', on)
         self.deleted_changed.emit()
 
     def _purge(self):
-        nb = self.db.con.execute('SELECT COUNT(*) FROM batteries WHERE deleted IS NOT NULL').fetchone()[0]
-        nm = self.db.con.execute('SELECT COUNT(*) FROM models WHERE deleted IS NOT NULL').fetchone()[0]
-        if not nb and not nm:
+        ns, nb, nm = self.db.deleted_counts()
+        if not ns and not nb and not nm:
             QMessageBox.information(self, tr('Delete'), tr('There are no deleted entries.'))
             return
-        if QMessageBox.question(self, tr('Delete'), tr('Delete all deleted entries for good ({} batteries, {} models)? '
-                                                        'Sessions and readings are kept. This cannot be undone.')
-                                .format(nb, nm)) == QMessageBox.Yes:
+        if QMessageBox.question(self, tr('Delete'), tr('Delete all deleted entries for good ({} sessions, {} batteries, '
+                                                        '{} models)? The readings are kept. This cannot be undone.')
+                                .format(ns, nb, nm)) == QMessageBox.Yes:
             self.db.purge_deleted()
             self.deleted_changed.emit()
 
@@ -2587,6 +2647,8 @@ class MainWindow(QMainWindow):
         heads = session_headers()
         self.table = make_table([heads[c] for c in self.COLS], autofilter=True)
         self.table.sortByColumn(0, Qt.DescendingOrder)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)      # Ctrl / Shift: several, to delete
+        row_menu(self.table, None, self.delete_sessions)
         self.table.currentCellChanged.connect(self._row_changed)    # click or arrow keys
         self.table.cellClicked.connect(self._row_clicked)           # same row again (e.g. after a slot view)
         self.tabs.addTab(self.table, tr('Sessions'))
@@ -2835,7 +2897,7 @@ class MainWindow(QMainWindow):
     def load_tables(self):
         self.devs = {x['id']: x for x in self.db.devices()}
         self.dtab.load()
-        rows = self.db.sessions()
+        rows = self.db.sessions(deleted=show_deleted())
         self.table.blockSignals(True)              # refilling / reselecting must not open a session
         fill_session_table(self.table, rows, self.COLS)
         if self.hist_id is not None:
@@ -2885,6 +2947,13 @@ class MainWindow(QMainWindow):
         for bid in battery_ids:
             self.worker.cmds.put(('battery', bid))
 
+    def delete_sessions(self):
+        """Selected sessions: soft delete (already deleted ones for good)."""
+        if delete_rows(self, self.table, (tr('session'), tr('sessions')), self.db.delete_sessions,
+                       self.db.hard_delete_sessions):
+            self.load_tables()
+            self.stab.refresh_stats()
+
     def deleted_changed(self):
         """Show-deleted switched or deleted entries purged: refill the lists."""
         self.btab.load()
@@ -2892,6 +2961,7 @@ class MainWindow(QMainWindow):
         self.result.reload_models()
         self.result.reload_batteries()
         self.load_tables()
+        self.stab.refresh_stats()
 
     def devices_renamed(self):
         self.load_tables()

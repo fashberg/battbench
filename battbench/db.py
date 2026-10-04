@@ -1,5 +1,6 @@
 """SQLite storage: chargers, every sample, every session (charging task) with phases and result,
 batteries and models."""
+import os
 import sqlite3
 import time
 from typing import List
@@ -35,10 +36,10 @@ CREATE TABLE IF NOT EXISTS imported (file TEXT PRIMARY KEY, at REAL, size INTEGE
 """
 SESSION_FIELDS = ['id', 'slot', 'start', 'end', 'task', 'chem', 'size', 'status', 'nominal', 'label',
                   'discharge_mah', 'charge_mah', 'res_min', 'temp_max', 'grade', 'note', 'battery_id',
-                  'battery_name', 'dev', 'dev_name', 'battery_deleted']
+                  'battery_name', 'dev', 'dev_name', 'battery_deleted', 'deleted']
 SESSION_SELECT = ('SELECT s.id, s.slot, s.start, s.end, s.task, s.chem, s.size, s.status, s.nominal, s.label, '
                   's.discharge_mah, s.charge_mah, s.res_min, s.temp_max, s.grade, s.note, s.battery_id, b.name, '
-                  's.dev, d.name, b.deleted IS NOT NULL '
+                  's.dev, d.name, b.deleted IS NOT NULL, s.deleted '
                   'FROM sessions s LEFT JOIN batteries b ON b.id = s.battery_id LEFT JOIN devices d ON d.id = s.dev')
 DEVICE_FIELDS = ['id', 'key', 'model', 'name', 'slots', 'version', 'last_seen', 'alt_key']
 LEGACY_N8 = 'NXHOSTP-legacy'      # data recorded before chargers were told apart
@@ -120,6 +121,9 @@ class DB:
         if self.con.execute('PRAGMA user_version').fetchone()[0] < 5:
             self._soft_delete()
             self.con.execute('PRAGMA user_version = 5')
+        if self.con.execute('PRAGMA user_version').fetchone()[0] < 6:
+            self._soft_delete('sessions')
+            self.con.execute('PRAGMA user_version = 6')
         if not self.con.execute('SELECT COUNT(*) FROM models').fetchone()[0]:
             self.con.executemany('INSERT INTO models (maker,name,type,capacity) VALUES (?,?,?,?)', DEFAULT_MODELS)
         self.con.commit()
@@ -169,10 +173,10 @@ class DB:
                              'HR-4UTHC AAA (schwarz)': 'HR-4UTHC AAA (black)'},
     }
 
-    def _soft_delete(self):
-        """Batteries and models are no longer removed: 'deleted' holds the time they were deleted (NULL = in use).
-        Deleted ones are hidden in lists and dropdowns; their sessions stay assigned."""
-        for table in ('batteries', 'models'):
+    def _soft_delete(self, *tables):
+        """Batteries and models (version 5) and sessions (version 6) are no longer removed: 'deleted' holds the
+        time they were deleted (NULL = in use). Deleted ones are hidden; sessions of a deleted battery stay assigned."""
+        for table in tables or ('batteries', 'models'):
             if 'deleted' not in [r[1] for r in self.con.execute(f'PRAGMA table_info({table})')]:
                 self.con.execute(f'ALTER TABLE {table} ADD COLUMN deleted REAL')
 
@@ -240,12 +244,26 @@ class DB:
         tracker.closed = [s for s in tracker.closed if s.dirty]   # keep only unsaved ones
         self.con.commit()
 
-    def sessions(self, limit=500):
-        return self.con.execute(SESSION_SELECT + ' ORDER BY s.start DESC LIMIT ?', (limit,)).fetchall()
+    def sessions(self, limit=500, deleted=False):
+        """The latest sessions; deleted: include soft-deleted ones."""
+        return self.con.execute(SESSION_SELECT + ('' if deleted else ' WHERE s.deleted IS NULL')
+                                + ' ORDER BY s.start DESC LIMIT ?', (limit,)).fetchall()
 
-    def battery_sessions(self, battery_id):
-        return self.con.execute(SESSION_SELECT + ' WHERE s.battery_id=? ORDER BY s.start DESC',
-                                (battery_id,)).fetchall()
+    def battery_sessions(self, battery_id, deleted=False):
+        return self.con.execute(SESSION_SELECT + ' WHERE s.battery_id=?' + ('' if deleted else ' AND s.deleted IS NULL')
+                                + ' ORDER BY s.start DESC', (battery_id,)).fetchall()
+
+    def delete_sessions(self, session_ids):
+        """Soft delete: hidden from now on (also from the battery statistics); readings and phases stay."""
+        self.con.executemany('UPDATE sessions SET deleted=? WHERE id=?', [(time.time(), i) for i in session_ids])
+        self.con.commit()
+
+    def hard_delete_sessions(self, session_ids):
+        """Remove sessions with their phases for good; the readings (samples) of the slot stay."""
+        for i in session_ids:
+            self.con.execute('DELETE FROM phases WHERE session_id=?', (i,))
+            self.con.execute('DELETE FROM sessions WHERE id=?', (i,))
+        self.con.commit()
 
     def phases(self, session_id):
         return self.con.execute('SELECT kind, start, end, mah FROM phases WHERE session_id=? ORDER BY idx',
@@ -291,14 +309,15 @@ class DB:
         the time it was deleted (None). deleted: include soft-deleted batteries."""
         return self.con.execute(
             'SELECT b.id, b.name, b.maker, b.capacity, b.type, b.description, '
-            ' (SELECT COUNT(*) FROM sessions s WHERE s.battery_id=b.id), '
-            ' (SELECT s.discharge_mah FROM sessions s WHERE s.battery_id=b.id AND s.discharge_mah > 0 '
+            ' (SELECT COUNT(*) FROM sessions s WHERE s.battery_id=b.id AND s.deleted IS NULL), '
+            ' (SELECT s.discharge_mah FROM sessions s WHERE s.battery_id=b.id AND s.discharge_mah > 0 AND s.deleted IS NULL '
             '  ORDER BY s.start DESC LIMIT 1), '
-            ' (SELECT s.grade FROM sessions s WHERE s.battery_id=b.id AND s.discharge_mah > 0 '
+            ' (SELECT s.grade FROM sessions s WHERE s.battery_id=b.id AND s.discharge_mah > 0 AND s.deleted IS NULL '
             '  ORDER BY s.start DESC LIMIT 1), '
             ' b.model_id, m.maker, m.name, '
-            ' (SELECT MAX(s.end) FROM sessions s WHERE s.battery_id=b.id AND s.discharge_mah > 0), '
-            ' (SELECT MAX(s.end) FROM sessions s WHERE s.battery_id=b.id AND s.charge_mah > 0), b.deleted '
+            ' (SELECT MAX(s.end) FROM sessions s WHERE s.battery_id=b.id AND s.discharge_mah > 0 AND s.deleted IS NULL), '
+            ' (SELECT MAX(s.end) FROM sessions s WHERE s.battery_id=b.id AND s.charge_mah > 0 AND s.deleted IS NULL), '
+            ' b.deleted '
             'FROM batteries b LEFT JOIN models m ON m.id = b.model_id '
             + ('' if deleted else 'WHERE b.deleted IS NULL ') + 'ORDER BY b.id').fetchall()
 
@@ -337,12 +356,33 @@ class DB:
         self.con.commit()
 
     def purge_deleted(self):
-        """Remove all soft-deleted batteries and models for good. Returns (batteries, models) removed."""
+        """Remove all soft-deleted sessions, batteries and models for good."""
+        sids = [r[0] for r in self.con.execute('SELECT id FROM sessions WHERE deleted IS NOT NULL')]
         bids = [r[0] for r in self.con.execute('SELECT id FROM batteries WHERE deleted IS NOT NULL')]
         mids = [r[0] for r in self.con.execute('SELECT id FROM models WHERE deleted IS NOT NULL')]
+        self.hard_delete_sessions(sids)
         self.hard_delete_batteries(bids)
         self.hard_delete_models(mids)
-        return len(bids), len(mids)
+
+    def deleted_counts(self):
+        """Soft-deleted (sessions, batteries, models)."""
+        return tuple(self.con.execute(f'SELECT COUNT(*) FROM {t} WHERE deleted IS NOT NULL').fetchone()[0]
+                     for t in ('sessions', 'batteries', 'models'))
+
+    def size(self):
+        """Bytes of the database file including its write-ahead log."""
+        return sum(os.path.getsize(self.path + x) for x in ('', '-wal') if os.path.exists(self.path + x))
+
+    def stats(self):
+        """Number of entries: readings, sessions, phases, batteries, models, chargers (deleted ones included)."""
+        return {t: self.con.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
+                for t in ('samples', 'sessions', 'phases', 'batteries', 'models', 'devices')}
+
+    def optimize(self):
+        """VACUUM (rewrite the file without free pages) and shrink the write-ahead log."""
+        self.con.commit()
+        self.con.execute('VACUUM')
+        self.con.execute('PRAGMA wal_checkpoint(TRUNCATE)')
 
     def makers(self):
         return [r[0] for r in self.con.execute(
@@ -466,11 +506,11 @@ class DB:
         if not cands:
             return
         t0 = min(cands)
-        old = self.con.execute('SELECT id, dev, slot, start, nominal, label, battery_id FROM sessions '
+        old = self.con.execute('SELECT id, dev, slot, start, nominal, label, battery_id, deleted FROM sessions '
                                'WHERE end >= ?', (t0 - GAP_SECS,)).fetchall()
         if old:
             t0 = min(t0, min(r[3] for r in old))
-        meta = {(r[1], r[2], round(r[3])): (r[4], r[5], r[6]) for r in old}
+        meta = {(r[1], r[2], round(r[3])): (r[4], r[5], r[6], r[7]) for r in old}
         for r in old:
             self.con.execute('DELETE FROM phases WHERE session_id=?', (r[0],))
             self.con.execute('DELETE FROM sessions WHERE id=?', (r[0],))
@@ -489,8 +529,9 @@ class DB:
                           if dev == s.dev and slot == s.slot and s.start <= st <= s.end and v[2] is not None), m)
             if m:
                 s.nominal = m[0] or s.nominal
-                restored.append((s, m[1], m[2]))
+                restored.append((s, m[1], m[2], m[3]))
         self.save_dirty(tracker)
-        for s, label, bid in restored:
-            self.con.execute('UPDATE sessions SET label=?, battery_id=? WHERE id=?', (label or '', bid, s.db_id))
+        for s, label, bid, deleted in restored:
+            self.con.execute('UPDATE sessions SET label=?, battery_id=?, deleted=? WHERE id=?',
+                             (label or '', bid, deleted, s.db_id))
         self.con.commit()

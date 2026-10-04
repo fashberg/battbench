@@ -139,6 +139,8 @@ but with a very high resistance (from 1000 mΩ NiMH / 400 mΩ Li-ion) is marked 
 - **Tables** (bottom): click a column title to sort; the funnel in a column title filters like a spreadsheet.
   *Sessions* lists all sessions, *Batteries* your batteries with their history on the right, *Models* the model list,
   *Chargers* the known chargers (rename them here – the name is stored only in BattBench).
+- **Deleting**: right click on sessions, batteries or models (Ctrl / Shift selects several). Deleted entries are
+  only hidden; *Settings* can show them again (grey) – deleting such an entry once more removes it for good.
 
 ### Supported chargers
 | Charger | Connection | Slots | Tested |
@@ -155,7 +157,8 @@ Chargers marked “–” are supported by protocol but have not been tried on r
 ### Your data
 All readings, sessions, batteries and models are stored in one database file (SQLite) on your computer: for the
 installed app in `%LOCALAPPDATA%\BattBench\battbench.db`, run from source in `battbench.db` in the project folder. The
-tab *Info* shows where it is. Back it up by copying the file while BattBench is closed. Nothing is sent anywhere.
+tab *Info* shows where it is, *Settings* its size and number of entries; *Optimise database* there shrinks the file.
+Back it up by copying the file while BattBench is closed. Nothing is sent anywhere.
 <!-- /help -->
 
 ## Versions
