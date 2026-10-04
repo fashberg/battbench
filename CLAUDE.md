@@ -30,7 +30,8 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
   `battbench.db` in the project folder. On exit `db.close_and_backup` checkpoints the WAL and writes
   `<db>-YYYYMMDD-HHMMSS.gz` (last 10 kept).
 - `DB.compress_samples` (setting `compress`, button in *Settings*): readings → one per minute / mode / current
-  direction, `raw = '1m'`; never readings of a running session of that slot (resume rebuilds those).
+  direction, `raw = '1m'`; never readings from `DB.resume_window()` on: a restart rebuilds the sessions of *all*
+  slots from there, compressed readings would change them (short ones would vanish).
 - The real database may be in use by a running app: open it read-only
   (`sqlite3.connect('file:battbench.db?mode=ro', uri=True)`) and test changes / migrations on a copy (`.backup()`).
 - GUI without a window: `QT_QPA_PLATFORM=offscreen` (+ `QT_QPA_FONTDIR=C:/Windows/Fonts` for screenshots),

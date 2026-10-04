@@ -27,6 +27,7 @@ from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QKeySequence, Q
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter, QDialog,
                                QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
+                               QProgressDialog,
                                QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
                                QProxyStyle, QPushButton, QSizePolicy, QSpinBox, QStackedWidget, QSplitter, QStyle,
                                QStyledItemDelegate, QStyleFactory, QStyleOptionViewItem, QTabWidget, QTableWidget,
@@ -123,6 +124,13 @@ def via_pixmap(vias, color, size=14):
             p, QRectF(i * (size + 2), 0, size, size))
     p.end()
     return pm
+
+
+def session_notes(deleted, compressed):
+    """' (4 deleted, 60 compressed)' after the number of sessions, or ''."""
+    notes = ([tr('{} deleted').format(deleted)] if deleted else []) + \
+        ([tr('{} compressed').format(compressed)] if compressed else [])
+    return f" ({', '.join(notes)})" if notes else ''
 
 
 def fmt_int(n):
@@ -492,8 +500,6 @@ class Worker(QObject):
                 _, sid, bid, nominal = cmd
                 self.db.set_session_meta(sid, battery_id=bid)
                 self._set_nominal(sid, nominal)
-            elif cmd[0] == 'compress':                    # button "compress all now"
-                self._compress(time.time() - 3600, optimize=True)
             elif cmd[0] == 'a4':
                 self.a4 = cmd[1]
                 if self.source != 'offline':
@@ -2505,8 +2511,9 @@ class SettingsTab(QWidget):
     def refresh_stats(self):
         n = self.db.stats()
         ds, db_, dm = self.db.deleted_counts()
-        rows = [(tr('File size'), fmt_size(self.db.size())), (tr('Readings'), fmt_int(n['samples'])),
-                (tr('Sessions'), fmt_int(n['sessions']) + (' ' + tr('({} deleted)').format(ds) if ds else '')),
+        rows = [(tr('File size'), fmt_size(self.db.size())), (tr('Readings'), fmt_int(n['samples']) + (' ' + tr('(compressed: {})').format(fmt_int(n['compressed']))
+                                                        if n['compressed'] else '')),
+                (tr('Sessions'), fmt_int(n['sessions']) + session_notes(ds, n['compressed_sessions'])),
                 (tr('Phases'), fmt_int(n['phases'])),
                 (tr('Batteries'), fmt_int(n['batteries']) + (' ' + tr('({} deleted)').format(db_) if db_ else '')),
                 (tr('Models'), fmt_int(n['models']) + (' ' + tr('({} deleted)').format(dm) if dm else '')),
@@ -2514,14 +2521,48 @@ class SettingsTab(QWidget):
         self.stats.setText('<table cellspacing="2">' + ''.join(
             f'<tr><td>{a}</td><td align="right">&nbsp;&nbsp;{b}</td></tr>' for a, b in rows) + '</table>')
 
-    compress_requested = Signal()
+    compressed = Signal()                 # readings compressed: curves are out of date
 
     def _compress_now(self):
+        """Compress everything except the last hour and running sessions, in the foreground with a progress
+        window, then optimise and show what it did."""
         if QMessageBox.question(self, tr('Compress readings'), tr(
                 'Compress all readings (except the last hour and running sessions) to one per minute and optimise '
-                'the database? Sessions and ratings stay; the fine resolution of the curves is lost for good.')
-                ) == QMessageBox.Yes:
-            self.compress_requested.emit()
+                'the database? Sessions and ratings stay; the fine resolution of the curves is lost irrevocably.')
+                ) != QMessageBox.Yes:
+            return
+        n0, size0 = self.db.stats(), self.db.size()
+        dlg = QProgressDialog(tr('Compressing readings …'), tr('Cancel'), 0, 100, self)
+        dlg.setWindowTitle(tr('Compress readings'))
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+
+        def progress(done, n):
+            dlg.setMaximum(n)
+            dlg.setValue(done)
+            QApplication.processEvents()
+            return dlg.wasCanceled()
+
+        n_in, n_out = self.db.compress_samples(time.time() - 3600, progress)
+        dlg.setLabelText(tr('Optimising database …'))
+        dlg.setCancelButton(None)
+        QApplication.processEvents()
+        note = ''
+        try:
+            self.db.optimize()
+        except sqlite3.Error as e:                          # busy: the worker is writing right now
+            note = '<p>' + tr('Optimising was not possible right now ({}); use “Optimise database” later.').format(e)
+        dlg.close()
+        n = self.db.stats()
+        self.refresh_stats()
+        self.compressed.emit()
+        rows = [(tr('Sessions in total'), fmt_int(n['sessions'])),
+                (tr('Compressed now'), tr('{} sessions ({} → {} readings)').format(
+                    fmt_int(n['compressed_sessions'] - n0['compressed_sessions']), fmt_int(n_in), fmt_int(n_out))),
+                (tr('Compressed in total'), tr('{} sessions').format(fmt_int(n['compressed_sessions']))),
+                (tr('File size'), tr('before {} / after {}').format(fmt_size(size0), fmt_size(self.db.size())))]
+        QMessageBox.information(self, tr('Compress readings'), '<table cellspacing="3">' + ''.join(
+            f'<tr><td>{a}:</td><td>&nbsp;{b}</td></tr>' for a, b in rows) + '</table>' + note)
 
     def _optimize(self):
         before = self.db.size()
@@ -2724,7 +2765,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.dtab, tr('Chargers'))
         self.stab = SettingsTab(self.db)
         self.stab.deleted_changed.connect(self.deleted_changed)
-        self.stab.compress_requested.connect(lambda: self.worker.cmds.put(('compress',)))
+        self.stab.compressed.connect(self.data_changed)
         self.tabs.addTab(self.stab, tr('Settings'))
         self.tabs.addTab(HelpTab(), tr('Help'))
         self.tabs.addTab(InfoTab(db_path), tr('Info'))

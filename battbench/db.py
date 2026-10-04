@@ -225,26 +225,43 @@ class DB:
             self.rerate(sid, commit=False)
 
     # ------------------------------------------------------------- samples
-    def compress_cutoff(self, before, dev, slot):
-        """Never compress readings of a running session (a restart rebuilds it from the readings)."""
-        row = self.con.execute('SELECT MIN(start) FROM sessions WHERE status=? AND dev=? AND slot=?',
-                               (RUNNING, dev, slot)).fetchone()
-        return min(before, row[0] - GAP_SECS) if row and row[0] else before
+    def resume_window(self):
+        """Start of the readings a restart rebuilds sessions from (see resume), or None: the earliest running
+        session (or one cut off by a gap during the 24 h before it), widened to every session that ends after it -
+        of all slots, since resume rebuilds them all."""
+        cands = []
+        for dev, slot, start in self.con.execute('SELECT dev, slot, start FROM sessions WHERE status=?',
+                                                 (RUNNING,)).fetchall():
+            row = self.con.execute('SELECT MIN(start) FROM sessions WHERE dev=? AND slot=? AND status=? '
+                                   'AND end BETWEEN ? AND ?', (dev, slot, ABORTED, start - 86400, start)).fetchone()
+            cands += [t for t in (start, row[0]) if t is not None]
+        if not cands:
+            return None
+        t0 = min(cands)
+        row = self.con.execute('SELECT MIN(start) FROM sessions WHERE end >= ?', (t0 - GAP_SECS,)).fetchone()
+        return min(t0, row[0]) if row[0] is not None else t0
+
+    def compress_cutoff(self, before):
+        """Never compress readings a restart rebuilds sessions from: they would come back changed (or, if short,
+        not at all)."""
+        start = self.resume_window()
+        return min(before, start - GAP_SECS) if start is not None else before
 
     def compress_samples(self, before, progress=None):
         """Readings older than `before` down to one per minute: per charger, slot, minute, mode and current
         direction (so a change from charging to discharging stays exact) one reading with the median of voltage,
         current, internal resistance and temperature and the last value of the counters and states (mAh, time,
         progress, mode). The raw packet is dropped. Sessions, phases and ratings are not touched.
+        progress(done, total) is called per charger slot; returning True stops after that slot.
         Returns (readings before, readings after)."""
         idx = {c: i for i, c in enumerate(COLS)}
+        cutoff = self.compress_cutoff(before)
         keys = self.con.execute('SELECT DISTINCT dev, slot FROM samples WHERE t < ? AND raw IS NOT ?',
-                                (before, COMPRESSED)).fetchall()
+                                (cutoff, COMPRESSED)).fetchall()
         n_in = n_out = 0
         for k, (dev, slot) in enumerate(keys):
-            if progress:
-                progress(k, len(keys))
-            cutoff = self.compress_cutoff(before, dev, slot)
+            if progress and progress(k, len(keys)):
+                break
             rows = self.con.execute(f"SELECT {','.join(COLS)} FROM samples WHERE dev=? AND slot=? AND t < ? "
                                     'AND raw IS NOT ? ORDER BY t', (dev, slot, cutoff, COMPRESSED)).fetchall()
             direction = lambda r: (r[idx['ma']] >= 10) - (r[idx['ma']] <= -10)          # noqa: E731
@@ -449,8 +466,13 @@ class DB:
 
     def stats(self):
         """Number of entries: readings, sessions, phases, batteries, models, chargers (deleted ones included)."""
-        return {t: self.con.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
-                for t in ('samples', 'sessions', 'phases', 'batteries', 'models', 'devices')}
+        n = {t: self.con.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
+             for t in ('samples', 'sessions', 'phases', 'batteries', 'models', 'devices')}
+        n['compressed'] = self.con.execute('SELECT COUNT(*) FROM samples WHERE raw=?', (COMPRESSED,)).fetchone()[0]
+        n['compressed_sessions'] = self.con.execute(
+            'SELECT COUNT(*) FROM sessions s WHERE EXISTS (SELECT 1 FROM samples x WHERE x.dev=s.dev AND x.slot=s.slot '
+            'AND x.t BETWEEN s.start AND s.end AND x.raw=?)', (COMPRESSED,)).fetchone()[0]
+        return n
 
     def optimize(self):
         """VACUUM (rewrite the file without free pages) and shrink the write-ahead log."""

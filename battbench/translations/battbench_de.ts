@@ -20,6 +20,14 @@
         <translation>%d.%m. %H:%M</translation>
     </message>
     <message>
+        <source>{} deleted</source>
+        <translation>{} gelöscht</translation>
+    </message>
+    <message>
+        <source>{} compressed</source>
+        <translation>{} komprimiert</translation>
+    </message>
+    <message>
         <source>%Y-%m-%d</source>
         <translation>%d.%m.%Y</translation>
     </message>
@@ -432,12 +440,48 @@
         <translation>Jetzt alle Messwerte komprimieren …</translation>
     </message>
     <message>
+        <source>(compressed: {})</source>
+        <translation>(davon komprimiert: {})</translation>
+    </message>
+    <message>
         <source>Compress readings</source>
         <translation>Messwerte komprimieren</translation>
     </message>
     <message>
-        <source>Compress all readings (except the last hour and running sessions) to one per minute and optimise the database? Sessions and ratings stay; the fine resolution of the curves is lost for good.</source>
-        <translation>Alle Messwerte (außer der letzten Stunde und laufenden Vorgängen) auf einen pro Minute komprimieren und die Datenbank optimieren? Vorgänge und Bewertungen bleiben; die feine Auflösung der Kurven geht endgültig verloren.</translation>
+        <source>Compressing readings …</source>
+        <translation>Komprimiere Messwerte …</translation>
+    </message>
+    <message>
+        <source>Cancel</source>
+        <translation>Abbrechen</translation>
+    </message>
+    <message>
+        <source>Optimising was not possible right now ({}); use “Optimise database” later.</source>
+        <translation>Optimieren war gerade nicht möglich ({}); später „Datenbank optimieren“ verwenden.</translation>
+    </message>
+    <message>
+        <source>Sessions in total</source>
+        <translation>Vorgänge insgesamt</translation>
+    </message>
+    <message>
+        <source>Compressed now</source>
+        <translation>Jetzt komprimiert</translation>
+    </message>
+    <message>
+        <source>{} sessions ({} → {} readings)</source>
+        <translation>{} Vorgänge ({} → {} Messwerte)</translation>
+    </message>
+    <message>
+        <source>Compressed in total</source>
+        <translation>Insgesamt komprimiert</translation>
+    </message>
+    <message>
+        <source>{} sessions</source>
+        <translation>{} Vorgänge</translation>
+    </message>
+    <message>
+        <source>before {} / after {}</source>
+        <translation>vorher {} / nachher {}</translation>
     </message>
     <message>
         <source>session</source>
@@ -682,6 +726,10 @@
     <message>
         <source>Delete all deleted entries for good …</source>
         <translation>Alle gelöschten Einträge endgültig löschen …</translation>
+    </message>
+    <message>
+        <source>Compress all readings (except the last hour and running sessions) to one per minute and optimise the database? Sessions and ratings stay; the fine resolution of the curves is lost irrevocably.</source>
+        <translation>Alle Messwerte (außer der letzten Stunde und laufenden Vorgängen) auf einen pro Minute komprimieren und die Datenbank optimieren? Vorgänge und Bewertungen bleiben; die feine Auflösung der Kurven geht unwiderruflich verloren.</translation>
     </message>
     <message>
         <source>There are no deleted entries.</source>
