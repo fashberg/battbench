@@ -24,12 +24,12 @@ from PySide6.QtCore import (QByteArray, QEvent, QObject, QPointF, QRectF, QRegul
 from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QPainter, QPen, QPixmap,
                            QRegularExpressionValidator)
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter, QDialog, QDialogButtonBox,
-                               QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-                               QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
-                               QSpinBox, QStackedWidget, QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
-                               QTabWidget, QTableWidget, QTableWidgetItem, QTextBrowser, QToolButton, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter, QDialog,
+                               QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
+                               QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
+                               QProxyStyle, QPushButton, QSizePolicy, QSpinBox, QStackedWidget, QSplitter, QStyle,
+                               QStyledItemDelegate, QStyleFactory, QStyleOptionViewItem, QTabWidget, QTableWidget,
+                               QTableWidgetItem, QTextBrowser, QToolButton, QVBoxLayout, QWidget)
 
 from . import __version__
 from .version import AUTHOR, SOURCE, WEBSITE, full_version
@@ -1138,6 +1138,32 @@ class _WordFilter(QSortFilterProxyModel):
         return all(w in text for w in self.words)
 
 
+class ViewStyle(QProxyStyle):
+    """The application style without its row panel: the Windows 11 style draws an accent bar into every cell of a
+    selected row there (ListDelegate draws the selection instead: background and one bar at the row start)."""
+
+    def drawPrimitive(self, element, option, painter, widget=None):
+        if element != QStyle.PE_PanelItemViewRow:
+            super().drawPrimitive(element, option, painter, widget)
+
+
+_view_style = None
+
+
+def view_style():
+    """One shared ViewStyle (a widget does not own the style set on it, so it must be kept alive here)."""
+    global _view_style
+    if _view_style is None:
+        _view_style = ViewStyle(QStyleFactory.create(QApplication.style().name()))
+    return _view_style
+
+
+def plain_selection(view):
+    """Lists and tables: selection drawn by ListDelegate only."""
+    view.setItemDelegate(ListDelegate(view))
+    view.setStyle(view_style())
+
+
 class ListDelegate(QStyledItemDelegate):
     """Selected entries of lists and table rows: light background and a thin accent bar 1 px from the left edge of
     the first column, with room before the text (the Windows 11 style draws a thick bar right against the text of
@@ -1208,7 +1234,7 @@ class SearchCombo(EditCombo):
         self.comp = QCompleter(self.proxy, self)
         self.comp.setCompletionMode(QCompleter.UnfilteredPopupCompletion)
         self.comp.setMaxVisibleItems(20)
-        self.comp.popup().setItemDelegate(ListDelegate(self.comp.popup()))
+        plain_selection(self.comp.popup())
         self.setCompleter(self.comp)          # QComboBox maps a picked popup row back through the proxy itself
         self.lineEdit().textEdited.connect(self._typed)
         self.lineEdit().editingFinished.connect(self._revert)
@@ -1251,7 +1277,7 @@ class NominalCombo(EditCombo):
         self.comp = QCompleter(self.model(), self)
         self.comp.setCompletionMode(QCompleter.PopupCompletion)
         self.comp.setMaxVisibleItems(15)
-        self.comp.popup().setItemDelegate(ListDelegate(self.comp.popup()))
+        plain_selection(self.comp.popup())
         self.setCompleter(self.comp)
         self.comp.activated[str].connect(self._picked)
         self.lineEdit().setValidator(QRegularExpressionValidator(QRegularExpression(r'\s*\d{0,5}\s*(m|mA|mAh)?\s*')))
@@ -1511,7 +1537,7 @@ class ResultPanel(QWidget):
         self.phases.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.phases.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.phases.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.phases.setItemDelegate(ListDelegate(self.phases))
+        plain_selection(self.phases)
         self.phases.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.phases.setCursor(Qt.PointingHandCursor)
         self.phases.setToolTip(tr('Click: show only this phase in the chart, click again: the whole run'))
@@ -1761,7 +1787,7 @@ def make_table(headers, autofilter=False):
     t = QTableWidget(0, len(headers))
     t.autofilter = AutoFilter(t) if autofilter else None
     t.setHorizontalHeaderLabels(headers)
-    t.setItemDelegate(ListDelegate(t))
+    plain_selection(t)
     t.verticalHeader().hide()
     t.setEditTriggers(QAbstractItemView.NoEditTriggers)
     t.setSelectionBehavior(QAbstractItemView.SelectRows)
