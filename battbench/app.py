@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
 from . import __version__
 from .version import AUTHOR, SOURCE, WEBSITE, full_version
 from .autofilter import FILTER_ROLE, SEARCH_ROLE, SORT_ROLE, AutoFilter, SortItem
-from .db import COMPRESS_AFTER, DB, SESSION_FIELDS, close_and_backup
+from .db import COMPRESS_AFTER, DB, SESSION_FIELDS, SampleThinner, close_and_backup
 from .device import UsbInfo, open_charger, usb_devices
 from .device_ble import BleManager
 from . import i18n
@@ -281,7 +281,7 @@ class Worker(QObject):
     def _run(self):
         """Reads every charger directly."""
         nxt_scan = nxt_save = last_emit = 0
-        stored_empty = {}
+        thinner = SampleThinner()                       # keep the DB small: one reading per slot every 5 s
         dirty = False
         self._status()
         self._apply_a4()
@@ -319,13 +319,9 @@ class Worker(QObject):
                         continue                        # second connection: data comes from the better one
                     store = []
                     for s in batch:
-                        key = (s.dev, s.slot)
-                        self.latest[key] = s
+                        self.latest[(s.dev, s.slot)] = s
                         self.tracker.feed(s)
-                        # keep the DB small: idle slots only once (needed to close sessions on resume)
-                        if not s.empty or not stored_empty.get(key):
-                            store.append(s)
-                        stored_empty[key] = s.empty
+                        store += thinner.add(s)
                     self.db.add_samples(store)
                     if r.dev in self.online:
                         self.online[r.dev]['in_mv'] = in_mv
@@ -350,6 +346,7 @@ class Worker(QObject):
             r.running = False
         if self.ble:
             self.ble.stop()
+        self.db.add_samples(thinner.flush())
         self.db.save_dirty(self.tracker)
 
     def _scan(self):
@@ -1484,7 +1481,7 @@ class BatteryDialog(QDialog):
             form.addRow(tr('Count:'), self.count)
         form.addRow(tr('Description:'), self.desc)
         form.addRow(dialog_buttons(self, self._ok))
-        chain = [self.model, self.em, nm, self.maker, self.capacity, self.type, self.id, self.count, self.desc]
+        chain = [self.model, self.em, nm, self.maker, self.capacity, self.type, self.id] +                 ([self.count] if battery is None else []) + [self.desc]       # count: only for new batteries
         for w1, w2 in zip(chain, chain[1:]):  # Tab in the order shown (default: order of creation)
             QWidget.setTabOrder(w1, w2)
         for w in (self.maker, self.capacity, self.type):   # a click on them while disabled explains why

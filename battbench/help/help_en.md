@@ -2,7 +2,7 @@
 
 ### What BattBench does
 BattBench turns your charger into a battery test bench. It reads every slot of every connected charger once a second
-and stores every reading. From these readings it recognises **sessions** – one task of one battery in one slot, from
+and stores a reading every 10 seconds (every change of task or current direction at once). From these readings it recognises **sessions** – one task of one battery in one slot, from
 inserting it until it is taken out or another task starts – with their charge and discharge **phases**. A session
 that measured a discharge gets a **rating**. If you give your batteries **numbers**, every session can be assigned
 to its battery, and you see how each cell ages over the months.

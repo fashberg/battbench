@@ -2,7 +2,8 @@
 
 ### Was BattBench macht
 BattBench macht aus deinem Ladegerät einen Akku-Prüfstand. Es liest jeden Schacht jedes angeschlossenen Ladegeräts
-einmal pro Sekunde aus und speichert jeden Messwert. Daraus erkennt es **Vorgänge** – eine Aufgabe eines Akkus in
+einmal pro Sekunde aus und speichert alle 10 Sekunden einen Messwert (jeden Wechsel von Aufgabe oder Stromrichtung
+sofort). Daraus erkennt es **Vorgänge** – eine Aufgabe eines Akkus in
 einem Schacht, vom Einlegen bis zum Entnehmen oder bis eine andere Aufgabe startet – mit ihren Lade- und
 Entlade**phasen**. Ein Vorgang mit gemessener Entladung bekommt eine **Bewertung**. Gibst du deinen Akkus
 **Nummern**, lässt sich jeder Vorgang seinem Akku zuordnen, und du siehst über die Monate, wie jeder Akku altert.

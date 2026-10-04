@@ -7,7 +7,7 @@
 *Two chargers with twelve slots live, the chart of a running capacity test, its rating and the list of batteries with
 their latest results.*
 
-BattBench reads ISDT and SkyRC chargers over **USB** and **Bluetooth**, records every reading, detects charge and
+BattBench reads ISDT and SkyRC chargers over **USB** and **Bluetooth**, records their readings, detects charge and
 discharge runs, rates each battery against its nominal capacity and keeps a **history per battery**. Several chargers
 can be connected at the same time. BattBench only ever *reads* from the chargers; it never changes a setting and never
 starts or stops anything.
@@ -68,7 +68,7 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28e9", ATTRS{idProduct}=="028a", TAG+="ua
 
 ### What BattBench does
 BattBench turns your charger into a battery test bench. It reads every slot of every connected charger once a second
-and stores every reading. From these readings it recognises **sessions** – one task of one battery in one slot, from
+and stores a reading every 10 seconds (every change of task or current direction at once). From these readings it recognises **sessions** – one task of one battery in one slot, from
 inserting it until it is taken out or another task starts – with their charge and discharge **phases**. A session
 that measured a discharge gets a **rating**. If you give your batteries **numbers**, every session can be assigned
 to its battery, and you see how each cell ages over the months.

@@ -1,6 +1,6 @@
 # BattBench – notes for Claude
 
-PC app (PySide6 + pyqtgraph + SQLite) that reads ISDT and SkyRC chargers over USB / Bluetooth, records every reading,
+PC app (PySide6 + pyqtgraph + SQLite) that reads ISDT and SkyRC chargers over USB / Bluetooth, records its readings,
 detects sessions and tracks batteries. User docs: `README.md`; protocol details: `ChargerDetails.md`.
 
 ## Language
@@ -48,8 +48,15 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
   (all entries must be finished), run it again to build the `.qm`. Commit `.ts` and `.qm`.
 
 ## Conventions and pitfalls
-- **DB upgrades** in `DB.__init__` via `PRAGMA user_version` (currently 4): 1 N8 size "AA/AAA", 2 N8 mode 9/10 →
-  13/14, 3 drop sessions < 10 s, 4 German stored values → English. New upgrade = next number, own method.
+- **Stored readings**: chargers are polled once a second, but `db.SampleThinner` stores at most one reading per slot
+  every `SAMPLE_SECS` (10 s); a change of mode, current direction, chemistry, size or empty / occupied is stored at
+  once together with the reading before it and the last one under load (resume rebuilds the same sessions and
+  phases). Pauses of pulsed charging (A4 Air, 0 mA) are no change and are skipped. The worker flushes the
+  held-back readings on exit. `DB.samples` thins older 1 s data the same way for the chart (`thin_rows`).
+- **DB upgrades** in `DB.__init__` via `PRAGMA user_version` (currently 8): 1 N8 size "AA/AAA", 2 N8 mode 9/10 →
+  13/14, 3 drop sessions < 10 s, 4 German stored values → English, 5 / 6 soft delete, 8 thin readings
+  (`thin_samples`; 7 was an unreleased first try).
+  New upgrade = next number, own method.
 - **Mode ids**: the N8 reports activation as 9/10; `device.N8_MODES` maps it to 13/14 when reading (9 stays "cycle" for
   SkyRC / A4). Analysis = 11 throughout, the phase follows the sign of the current.
 - Sessions shorter than `MIN_SECS` (10 s) are not stored (`DB.save_dirty`).

@@ -11,9 +11,69 @@ import time
 from typing import List
 
 from .device import N8_MODES, Sample
-from .model import ABORTED, GAP_SECS, MIN_SECS, RUNNING, Phase, Session, Tracker
+from .model import ABORTED, GAP_SECS, MIN_SECS, PHASE_MIN_MA, RUNNING, Phase, Session, Tracker
 
 BACKUPS = 10              # gzip copies kept next to the database (ring buffer)
+SAMPLE_SECS = 10          # at most one stored / plotted reading per slot in this many seconds
+
+
+def _direction(ma):
+    return (ma >= PHASE_MIN_MA) - (ma <= -PHASE_MIN_MA)
+
+
+class SampleThinner:
+    """Decides which readings are stored: at most one per slot every SAMPLE_SECS. A change of mode, current
+    direction, chemistry, size or empty / occupied is always stored, together with the reading just before it
+    and the last one under load before it, so sessions and phases rebuilt from the database (resume) keep their exact limits. Idle empty slots are
+    stored only once.
+    Pulsed charging (the A4 Air pauses every few seconds, 0 mA) is no change of direction, like in the phase
+    detection; a pause reading is stored only if there was no reading under load for 3 x SAMPLE_SECS, so the
+    curves show the values under load instead of a zigzag."""
+
+    def __init__(self, secs=SAMPLE_SECS):
+        self.secs = secs
+        self.stored = {}          # key -> (t, state) of the last stored reading
+        self.pending = {}         # key -> newest reading not stored yet
+        self.loaded = {}          # key -> newest reading under load not stored yet (end of a phase)
+
+    def keep(self, key, item, t, mode, ma, empty=False, extra=()):
+        """The items to store now for this new one (none, it, or the one before and it)."""
+        last = self.stored.get(key)
+        d = _direction(ma)
+        sticky = d if d or last is None else last[1][1]          # a pause keeps the direction
+        state = (mode, sticky, empty) + tuple(extra)
+        changed = last is None or state != last[1]
+        if not changed:
+            age = t - last[0]
+            if empty or age < self.secs or (d == 0 and sticky != 0 and age < 3 * self.secs):
+                self.pending[key] = None if empty else item
+                if d:
+                    self.loaded[key] = item
+                return []
+        prev, loaded = self.pending.pop(key, None), self.loaded.pop(key, None)
+        self.stored[key] = (t, state)
+        if not changed:
+            return [item]
+        return [x for x in (loaded, prev if prev is not loaded else None) if x is not None] + [item]
+
+    def add(self, s: Sample) -> List[Sample]:
+        return self.keep((s.dev, s.slot), s, s.t, s.mode, s.ma, s.empty, (s.chem, s.size))
+
+    def flush(self):
+        """Items held back (on exit): the last values of every slot."""
+        out = [s for s in self.pending.values() if s is not None]
+        self.pending.clear()
+        self.loaded.clear()
+        return out
+
+
+def thin_rows(rows, secs=SAMPLE_SECS):
+    """Rows (t, mv, ma, res, mah, temp, mode) in time order thinned like SampleThinner (for the chart); the last
+    row is always kept."""
+    th, out = SampleThinner(secs), []
+    for r in rows:
+        out += th.keep(None, r, r[0], r[6], r[2])
+    return out + th.flush()
 
 
 def close_and_backup(path, keep=BACKUPS):
@@ -157,6 +217,9 @@ class DB:
         if self.con.execute('PRAGMA user_version').fetchone()[0] < 6:
             self._soft_delete('sessions')
             self.con.execute('PRAGMA user_version = 6')
+        if self.con.execute('PRAGMA user_version').fetchone()[0] < 8:
+            self.thin_samples()
+            self.con.execute('PRAGMA user_version = 8')
         if not self.con.execute('SELECT COUNT(*) FROM models').fetchone()[0]:
             self.con.executemany('INSERT INTO models (maker,name,type,capacity) VALUES (?,?,?,?)', DEFAULT_MODELS)
         self.con.commit()
@@ -205,6 +268,25 @@ class DB:
                              'HR-4UTC AAA (weiß)': 'HR-4UTC AAA (white)',
                              'HR-4UTHC AAA (schwarz)': 'HR-4UTHC AAA (black)'},
     }
+
+    def thin_samples(self):
+        """Version 8: readings stored once a second down to what SampleThinner keeps (one per slot every
+        SAMPLE_SECS, every change exact). Compressed readings stay. Returns (readings before, readings after)."""
+        n_in = n_out = 0
+        keys = self.con.execute('SELECT DISTINCT dev, slot FROM samples').fetchall()
+        for dev, slot in keys:
+            rows = self.con.execute(f"SELECT {','.join(COLS)} FROM samples WHERE dev=? AND slot=? AND raw IS NOT ? "
+                                    'ORDER BY t', (dev, slot, COMPRESSED)).fetchall()
+            th = SampleThinner()
+            keep = set()
+            for r in rows:
+                keep.update(s.t for s in th.add(Sample(*r)))
+            keep.update(s.t for s in th.flush())
+            self.con.executemany('DELETE FROM samples WHERE dev=? AND slot=? AND t=?',
+                                 [(dev, slot, r[0]) for r in rows if r[0] not in keep])
+            n_in += len(rows)
+            n_out += len(keep)
+        return n_in, n_out
 
     def _soft_delete(self, *tables):
         """Batteries and models (version 5) and sessions (version 6) are no longer removed: 'deleted' holds the
@@ -299,11 +381,12 @@ class DB:
             f"INSERT OR IGNORE INTO samples VALUES ({','.join('?' * len(COLS))})",
             [tuple(getattr(s, c) for c in COLS) for s in samples])
 
-    def samples(self, dev, slot, t0, t1):
+    def samples(self, dev, slot, t0, t1, secs=SAMPLE_SECS):
+        """Readings for the chart: (t, mv, ma, res, mah, temp, mode), at most one per `secs` (thin_rows)."""
         cur = self.con.execute(
             'SELECT t, mv, ma, res, mah, temp, mode FROM samples WHERE dev=? AND slot=? AND t BETWEEN ? AND ? '
             'ORDER BY t', (dev, slot, t0, t1))
-        return cur.fetchall()
+        return thin_rows(cur.fetchall(), secs) if secs else cur.fetchall()
 
     # ------------------------------------------------------------- sessions
     def save_session(self, s: Session):
