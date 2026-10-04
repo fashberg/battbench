@@ -1,0 +1,6 @@
+PySide6>=6.6
+pyqtgraph>=0.13
+numpy
+hidapi>=0.10.1
+bleak>=0.22
+isdttool @ git+https://git.ashberg.de/folke/isdttool.git
