@@ -93,6 +93,15 @@ class FilterHeader(QHeaderView):
             return
         super().mousePressEvent(e)
 
+    desc_first = frozenset()                  # columns sorted descending on the first click (counts, dates)
+
+    def mouseReleaseEvent(self, e):
+        logical = self.logicalIndexAt(e.position().toPoint())
+        new = logical != self.sortIndicatorSection()
+        super().mouseReleaseEvent(e)
+        if new and logical in self.desc_first and self.sortIndicatorSection() == logical:
+            self.setSortIndicator(logical, Qt.DescendingOrder)
+
 
 class FilterPopup(QFrame):
     """Sort buttons, search field and the check list of one column's values."""

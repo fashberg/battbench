@@ -35,10 +35,10 @@ CREATE TABLE IF NOT EXISTS imported (file TEXT PRIMARY KEY, at REAL, size INTEGE
 """
 SESSION_FIELDS = ['id', 'slot', 'start', 'end', 'task', 'chem', 'size', 'status', 'nominal', 'label',
                   'discharge_mah', 'charge_mah', 'res_min', 'temp_max', 'grade', 'note', 'battery_id',
-                  'battery_name', 'dev', 'dev_name']
+                  'battery_name', 'dev', 'dev_name', 'battery_deleted']
 SESSION_SELECT = ('SELECT s.id, s.slot, s.start, s.end, s.task, s.chem, s.size, s.status, s.nominal, s.label, '
                   's.discharge_mah, s.charge_mah, s.res_min, s.temp_max, s.grade, s.note, s.battery_id, b.name, '
-                  's.dev, d.name '
+                  's.dev, d.name, b.deleted IS NOT NULL '
                   'FROM sessions s LEFT JOIN batteries b ON b.id = s.battery_id LEFT JOIN devices d ON d.id = s.dev')
 DEVICE_FIELDS = ['id', 'key', 'model', 'name', 'slots', 'version', 'last_seen', 'alt_key']
 LEGACY_N8 = 'NXHOSTP-legacy'      # data recorded before chargers were told apart
@@ -117,6 +117,9 @@ class DB:
         if self.con.execute('PRAGMA user_version').fetchone()[0] < 4:
             self._english_values()
             self.con.execute('PRAGMA user_version = 4')
+        if self.con.execute('PRAGMA user_version').fetchone()[0] < 5:
+            self._soft_delete()
+            self.con.execute('PRAGMA user_version = 5')
         if not self.con.execute('SELECT COUNT(*) FROM models').fetchone()[0]:
             self.con.executemany('INSERT INTO models (maker,name,type,capacity) VALUES (?,?,?,?)', DEFAULT_MODELS)
         self.con.commit()
@@ -165,6 +168,13 @@ class DB:
                              'HR-4UTC AAA (weiß)': 'HR-4UTC AAA (white)',
                              'HR-4UTHC AAA (schwarz)': 'HR-4UTHC AAA (black)'},
     }
+
+    def _soft_delete(self):
+        """Batteries and models are no longer removed: 'deleted' holds the time they were deleted (NULL = in use).
+        Deleted ones are hidden in lists and dropdowns; their sessions stay assigned."""
+        for table in ('batteries', 'models'):
+            if 'deleted' not in [r[1] for r in self.con.execute(f'PRAGMA table_info({table})')]:
+                self.con.execute(f'ALTER TABLE {table} ADD COLUMN deleted REAL')
 
     def _english_values(self):
         """Up to version 3 task, status, grade and phase were stored as German words (and the default model list
@@ -275,9 +285,10 @@ class DB:
         return row[0] if row else None
 
     # ------------------------------------------------------------- batteries
-    def batteries(self):
+    def batteries(self, deleted=False):
         """All batteries with number of sessions, the latest measured discharge capacity / grade, the model
-        (id, maker, name) and the end of the last measurement (session with a discharge capacity) / last charge."""
+        (id, maker, name), the end of the last measurement (session with a discharge capacity) / last charge and
+        the time it was deleted (None). deleted: include soft-deleted batteries."""
         return self.con.execute(
             'SELECT b.id, b.name, b.maker, b.capacity, b.type, b.description, '
             ' (SELECT COUNT(*) FROM sessions s WHERE s.battery_id=b.id), '
@@ -287,13 +298,15 @@ class DB:
             '  ORDER BY s.start DESC LIMIT 1), '
             ' b.model_id, m.maker, m.name, '
             ' (SELECT MAX(s.end) FROM sessions s WHERE s.battery_id=b.id AND s.discharge_mah > 0), '
-            ' (SELECT MAX(s.end) FROM sessions s WHERE s.battery_id=b.id AND s.charge_mah > 0) '
-            'FROM batteries b LEFT JOIN models m ON m.id = b.model_id ORDER BY b.id').fetchall()
+            ' (SELECT MAX(s.end) FROM sessions s WHERE s.battery_id=b.id AND s.charge_mah > 0), b.deleted '
+            'FROM batteries b LEFT JOIN models m ON m.id = b.model_id '
+            + ('' if deleted else 'WHERE b.deleted IS NULL ') + 'ORDER BY b.id').fetchall()
 
-    def battery(self, battery_id):
-        row = self.con.execute(f"SELECT {','.join(BATTERY_FIELDS)} FROM batteries WHERE id=?",
-                               (battery_id,)).fetchone()
-        return dict(zip(BATTERY_FIELDS, row)) if row else None
+    def battery(self, battery_id, deleted=False):
+        """One battery as dict (with 'deleted': time or None); deleted ones only with deleted=True."""
+        row = self.con.execute(f"SELECT {','.join(BATTERY_FIELDS)}, deleted FROM batteries WHERE id=?"
+                               + ('' if deleted else ' AND deleted IS NULL'), (battery_id,)).fetchone()
+        return dict(zip(BATTERY_FIELDS + ['deleted'], row)) if row else None
 
     def next_battery_id(self):
         return (self.con.execute('SELECT MAX(id) FROM batteries').fetchone()[0] or 0) + 1
@@ -311,14 +324,30 @@ class DB:
                 self.con.execute('UPDATE sessions SET battery_id=? WHERE battery_id=?', (b['id'], old_id))
         self.con.commit()
 
-    def delete_battery(self, battery_id):
-        self.con.execute('UPDATE sessions SET battery_id=NULL WHERE battery_id=?', (battery_id,))
-        self.con.execute('DELETE FROM batteries WHERE id=?', (battery_id,))
+    def delete_batteries(self, battery_ids):
+        """Soft delete: hidden from now on; the id stays taken and the sessions stay assigned."""
+        self.con.executemany('UPDATE batteries SET deleted=? WHERE id=?', [(time.time(), b) for b in battery_ids])
         self.con.commit()
+
+    def hard_delete_batteries(self, battery_ids):
+        """Remove for good: their sessions lose the assignment (the sessions and readings stay)."""
+        for b in battery_ids:
+            self.con.execute('UPDATE sessions SET battery_id=NULL WHERE battery_id=?', (b,))
+            self.con.execute('DELETE FROM batteries WHERE id=?', (b,))
+        self.con.commit()
+
+    def purge_deleted(self):
+        """Remove all soft-deleted batteries and models for good. Returns (batteries, models) removed."""
+        bids = [r[0] for r in self.con.execute('SELECT id FROM batteries WHERE deleted IS NOT NULL')]
+        mids = [r[0] for r in self.con.execute('SELECT id FROM models WHERE deleted IS NOT NULL')]
+        self.hard_delete_batteries(bids)
+        self.hard_delete_models(mids)
+        return len(bids), len(mids)
 
     def makers(self):
         return [r[0] for r in self.con.execute(
-            "SELECT maker FROM models WHERE maker != '' UNION SELECT maker FROM batteries WHERE maker != '' "
+            "SELECT maker FROM models WHERE maker != '' AND deleted IS NULL UNION "
+            "SELECT maker FROM batteries WHERE maker != '' AND deleted IS NULL "
             'ORDER BY 1 COLLATE NOCASE')]
 
     # ------------------------------------------------------------- devices
@@ -375,20 +404,23 @@ class DB:
         self.con.commit()
 
     # ------------------------------------------------------------- models
-    def models(self):
-        """All models with the number of batteries of that model."""
+    def models(self, deleted=False):
+        """All models with the number of batteries of that model and the time it was deleted (None).
+        deleted: include soft-deleted models."""
         return self.con.execute(
             f"SELECT {','.join('m.' + k for k in MODEL_FIELDS)}, "
-            '(SELECT COUNT(*) FROM batteries b WHERE b.model_id=m.id) '
-            'FROM models m ORDER BY m.maker COLLATE NOCASE, m.name COLLATE NOCASE').fetchall()
+            '(SELECT COUNT(*) FROM batteries b WHERE b.model_id=m.id AND b.deleted IS NULL), m.deleted '
+            'FROM models m ' + ('' if deleted else 'WHERE m.deleted IS NULL ')
+            + 'ORDER BY m.maker COLLATE NOCASE, m.name COLLATE NOCASE').fetchall()
 
     def model(self, model_id):
         row = self.con.execute(f"SELECT {','.join(MODEL_FIELDS)} FROM models WHERE id=?", (model_id,)).fetchone()
         return dict(zip(MODEL_FIELDS, row)) if row else None
 
     def find_model(self, maker, name):
-        row = self.con.execute('SELECT id FROM models WHERE maker=? AND name=?', (maker, name)).fetchone()
-        return row[0] if row else None
+        """(id, deleted) of the model with this maker and name, or (None, None)."""
+        row = self.con.execute('SELECT id, deleted FROM models WHERE maker=? AND name=?', (maker, name)).fetchone()
+        return (row[0], row[1]) if row else (None, None)
 
     def save_model(self, m: dict):
         """Insert (m['id'] None) or update. Batteries of the model take over name / maker / type / capacity.
@@ -399,16 +431,23 @@ class DB:
                                    vals).lastrowid
         else:
             mid = m['id']
-            self.con.execute('UPDATE models SET maker=?,name=?,type=?,capacity=?,note=? WHERE id=?', vals + (mid,))
+            self.con.execute('UPDATE models SET maker=?,name=?,type=?,capacity=?,note=?,deleted=NULL WHERE id=?',
+                             vals + (mid,))                    # saving a deleted model brings it back
         self.con.execute('UPDATE batteries SET name=?, maker=?, type=?, capacity=? WHERE model_id=?',
                          (m['name'], m['maker'], m['type'], m['capacity'], mid))
         self.con.commit()
         return mid, [r[0] for r in self.con.execute('SELECT id FROM batteries WHERE model_id=?', (mid,))]
 
-    def delete_model(self, model_id):
-        """Batteries of this model keep maker / type / capacity, they just lose the link."""
-        self.con.execute('UPDATE batteries SET model_id=NULL WHERE model_id=?', (model_id,))
-        self.con.execute('DELETE FROM models WHERE id=?', (model_id,))
+    def delete_models(self, model_ids):
+        """Soft delete: hidden from now on; its batteries keep their values (maker / type / capacity)."""
+        self.con.executemany('UPDATE models SET deleted=? WHERE id=?', [(time.time(), m) for m in model_ids])
+        self.con.commit()
+
+    def hard_delete_models(self, model_ids):
+        """Remove for good: its batteries lose the link but keep maker / type / capacity."""
+        for m in model_ids:
+            self.con.execute('UPDATE batteries SET model_id=NULL WHERE model_id=?', (m,))
+            self.con.execute('DELETE FROM models WHERE id=?', (m,))
         self.con.commit()
 
     # ------------------------------------------------------------- resume

@@ -37,10 +37,17 @@ NO_GRADE = '–'
 # Rating notes: (text with {placeholders}, values). The DB keeps them in English, the app translates the text.
 NOTE_CAPACITY = QT_TRANSLATE_NOOP('data', '{mah} mAh = {pct} % of {nominal} mAh')
 NOTE_EFFICIENCY = QT_TRANSLATE_NOOP('data', 'charge efficiency {pct} %')
-NOTE_RES = {'low': QT_TRANSLATE_NOOP('data', 'internal resistance {res} (low)'),
-            'raised': QT_TRANSLATE_NOOP('data', 'internal resistance {res} (raised)'),
-            'high': QT_TRANSLATE_NOOP('data', 'internal resistance {res} (high)')}
+NOTE_RES = QT_TRANSLATE_NOOP('data', 'internal resistance {res} mΩ: {quality} (lower is better)')
+# Internal resistance as the chargers report it (contact resistance included, so higher than a 4-wire meter):
+# upper limits in mOhm for very good / good / medium / poor, above: very poor; and from where a cell without a
+# capacity measurement counts as suspicious.
+RES_QUALITY = (QT_TRANSLATE_NOOP('data', 'very good'), QT_TRANSLATE_NOOP('data', 'good'),
+               QT_TRANSLATE_NOOP('data', 'medium'), QT_TRANSLATE_NOOP('data', 'poor'),
+               QT_TRANSLATE_NOOP('data', 'very poor'))
+RES_LIMITS = {'ni': (150, 300, 450, 600), 'li': (50, 100, 150, 200)}
+RES_SUSPICIOUS = {'ni': 1000, 'li': 400}
 NOTE_RUNNING = QT_TRANSLATE_NOOP('data', 'task not finished yet')
+NOTE_MEASURING = QT_TRANSLATE_NOOP('data', 'discharge running: {mah} mAh so far')
 NOTE_INCOMPLETE = QT_TRANSLATE_NOOP('data', 'task {status}, result incomplete')
 
 GAP_SECS = 300            # no data for this long -> session closed
@@ -98,26 +105,51 @@ class Session:
 def rate(s: Session):
     """Returns (grade, note in English)."""
     grade, notes = rate_values(s.discharge_mah, s.nominal or NOMINAL.get(s.size, 0), s.charge_mah, s.res_min,
-                               s.status)
+                               s.status, measuring(s.status, [p.kind for p in s.phases]), s.chem)
     return grade, note_text(notes)
 
 
-def rate_values(dis, nominal, chg, res, status):
+def res_family(chem):
+    """'li' for lithium chemistries (LiIon, LiHV, LiFe, Li-Ion …), else 'ni' (NiMH, NiCd, NiZn, unknown)."""
+    return 'li' if (chem or '').lower().startswith('li') else 'ni'
+
+
+def res_level(res, chem):
+    """0 very good … 4 very poor (index into RES_QUALITY)."""
+    return sum(res >= limit for limit in RES_LIMITS[res_family(chem)])
+
+
+def measuring(status, kinds):
+    """The discharge capacity is still being measured (running session whose last phase is a discharge): no
+    rating yet. kinds: phase kinds in order."""
+    return status == RUNNING and bool(kinds) and kinds[-1] == DISCHARGE
+
+
+def rate_values(dis, nominal, chg, res, status, still_measuring=False, chem=''):
     """Returns (grade, notes), notes = [(text, values)] (see note_text).
-    Capacity rule from the SkyRC manuals: < 60 % of nominal = worn out."""
+    Capacity rule from the SkyRC manuals: < 60 % of nominal = worn out. A very poor internal resistance lowers a
+    (very) good capacity rating to fair."""
     notes = []
     grade = NO_GRADE
+    level = res_level(res, chem) if res else None
+    res_note = (NOTE_RES, dict(res=res, quality=RES_QUALITY[level])) if res else None
+    if still_measuring:
+        if dis:
+            notes.append((NOTE_MEASURING, dict(mah=dis)))
+        if res_note:
+            notes.append(res_note)
+        return grade, notes
     if dis and nominal:
         pct = 100 * dis / nominal
         grade = GRADES[0 if pct >= 90 else 1 if pct >= 80 else 2 if pct >= 60 else 3]
         notes.append((NOTE_CAPACITY, dict(mah=dis, pct=round(pct), nominal=nominal)))
         if chg and status == FINISHED:
             notes.append((NOTE_EFFICIENCY, dict(pct=round(100 * dis / chg))))
-    if res:
-        notes.append((NOTE_RES['low' if res < 300 else 'raised' if res < 600 else 'high'], dict(res=res)))
-        if res >= 600 and grade in GRADES[:2]:
+    if res_note:
+        notes.append(res_note)
+        if level == 4 and grade in GRADES[:2]:
             grade = GRADES[2]
-        if res >= 1000 and grade == NO_GRADE:
+        if res >= RES_SUSPICIOUS[res_family(chem)] and grade == NO_GRADE:
             grade = GRADES[4]
     if status == RUNNING:
         notes.append((NOTE_RUNNING, {}))
@@ -127,8 +159,9 @@ def rate_values(dis, nominal, chg, res, status):
 
 
 def note_text(notes, translate=lambda text: text):
-    """notes from rate_values -> one line. translate: e.g. i18n.tr_data (applied to the texts and the status)."""
-    return '; '.join(translate(text).format(**{k: translate(v) if k == 'status' else v for k, v in values.items()})
+    """notes from rate_values -> one line. translate: e.g. i18n.tr_data (applied to the texts, status and quality)."""
+    return '; '.join(translate(text).format(**{k: translate(v) if k in ('status', 'quality') else v
+                                               for k, v in values.items()})
                      for text, values in notes)
 
 

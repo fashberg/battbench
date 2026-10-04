@@ -88,6 +88,14 @@
         <translation>Dauer (h:mm:ss)</translation>
     </message>
     <message>
+        <source>Reset view</source>
+        <translation>Ansicht zurücksetzen</translation>
+    </message>
+    <message>
+        <source>phase: {} (click: whole run)</source>
+        <translation>Phase: {} (Klick: ganzer Vorgang)</translation>
+    </message>
+    <message>
         <source>%b %d, %H:%M:%S</source>
         <translation>%d.%m. %H:%M:%S</translation>
     </message>
@@ -248,24 +256,96 @@
         <translation>Dauer</translation>
     </message>
     <message>
+        <source>Click: show only this phase in the chart, click again: the whole run</source>
+        <translation>Klick: nur diese Phase im Diagramm zeigen, erneuter Klick: ganzer Vorgang</translation>
+    </message>
+    <message>
         <source>Battery:</source>
         <translation>Akku:</translation>
-    </message>
-    <message>
-        <source>Default</source>
-        <translation>Standard</translation>
-    </message>
-    <message>
-        <source>Save / rate again</source>
-        <translation>Speichern / neu bewerten</translation>
     </message>
     <message>
         <source>– no battery assigned –</source>
         <translation>– kein Akku zugeordnet –</translation>
     </message>
     <message>
+        <source>(deleted)</source>
+        <translation>(gelöscht)</translation>
+    </message>
+    <message>
+        <source>The task set on the charger:</source>
+        <translation>Am Ladegerät eingestellter Vorgang:</translation>
+    </message>
+    <message>
+        <source>charges the battery</source>
+        <translation>lädt den Akku</translation>
+    </message>
+    <message>
+        <source>empties the battery and measures what it delivers</source>
+        <translation>entleert den Akku und misst, was er abgibt</translation>
+    </message>
+    <message>
+        <source>brings the battery to its storage voltage</source>
+        <translation>bringt den Akku auf Lagerspannung</translation>
+    </message>
+    <message>
+        <source>charges and discharges several times</source>
+        <translation>lädt und entlädt mehrmals</translation>
+    </message>
+    <message>
+        <source>charges, discharges (capacity measurement) and charges again</source>
+        <translation>lädt, entlädt (Kapazitätsmessung) und lädt wieder</translation>
+    </message>
+    <message>
+        <source>several cycles to revive old or long-stored cells</source>
+        <translation>mehrere Zyklen, um alte oder lange gelagerte Akkus zu beleben</translation>
+    </message>
+    <message>
+        <source>State of the session:</source>
+        <translation>Zustand des Vorgangs:</translation>
+    </message>
+    <message>
+        <source>the charger has finished the task</source>
+        <translation>das Ladegerät hat den Vorgang beendet</translation>
+    </message>
+    <message>
+        <source>the battery was taken out before the task was finished</source>
+        <translation>der Akku wurde entnommen, bevor der Vorgang fertig war</translation>
+    </message>
+    <message>
+        <source>the task was stopped or replaced by another one, or the data broke off</source>
+        <translation>der Vorgang wurde abgebrochen, durch einen anderen ersetzt, oder die Daten brachen ab</translation>
+    </message>
+    <message>
+        <source>&lt;p&gt;The capacity the battery delivered during the (last) discharge, measured by the charger. Compared with the nominal capacity it gives the rating: a healthy cell reaches 80 % or more.&lt;/p&gt;</source>
+        <translation>&lt;p&gt;Die Kapazität, die der Akku bei der (letzten) Entladung abgegeben hat, gemessen vom Ladegerät. Im Vergleich zur Nennkapazität ergibt sie die Bewertung: Ein gesunder Akku erreicht 80 % oder mehr.&lt;/p&gt;</translation>
+    </message>
+    <message>
+        <source>&lt;p&gt;The charge put into the battery after the discharge (or during a plain charge). It is higher than the discharge capacity because charging has losses; discharge ÷ charge is the charge efficiency, typically 70–90 % for NiMH.&lt;/p&gt;</source>
+        <translation>&lt;p&gt;Die Ladung, die nach der Entladung (oder bei reinem Laden) in den Akku geflossen ist. Sie ist höher als die Entladekapazität, weil Laden Verluste hat; Entladung ÷ Ladung ist der Ladewirkungsgrad, bei NiMH typisch 70–90 %.&lt;/p&gt;</translation>
+    </message>
+    <message>
+        <source>&lt;p&gt;The internal resistance as the charger measures it – &lt;b&gt;lower is better&lt;/b&gt;. It rises with age and wear; a high value lets the voltage drop under load, so the device switches off earlier. &quot;min.&quot; is the lowest value of the session, first and last are the values at its start and end.&lt;/p&gt;</source>
+        <translation>&lt;p&gt;Der Innenwiderstand, wie ihn das Ladegerät misst – &lt;b&gt;niedriger ist besser&lt;/b&gt;. Er steigt mit Alter und Verschleiß; ein hoher Wert lässt die Spannung unter Last einbrechen, das Gerät schaltet früher ab. „min.“ ist der kleinste Wert des Vorgangs, erster und letzter die Werte an Anfang und Ende.&lt;/p&gt;</translation>
+    </message>
+    <message>
+        <source>&lt;p&gt;The highest temperature of the battery during the session. NiMH cells get warm towards the end of charging, which is normal. Above about 45 °C the cell is stressed: check the contacts and the charging current.&lt;/p&gt;</source>
+        <translation>&lt;p&gt;Die höchste Temperatur des Akkus während des Vorgangs. NiMH-Akkus werden gegen Ende des Ladens warm, das ist normal. Ab etwa 45 °C wird der Akku belastet: Kontakte und Ladestrom prüfen.&lt;/p&gt;</translation>
+    </message>
+    <message>
+        <source>default ({} mAh)</source>
+        <translation>Standard ({} mAh)</translation>
+    </message>
+    <message>
+        <source>not set</source>
+        <translation>nicht gesetzt</translation>
+    </message>
+    <message>
         <source>No session in this slot</source>
         <translation>Kein Vorgang in diesem Slot</translation>
+    </message>
+    <message>
+        <source>Set the nominal capacity for a rating</source>
+        <translation>Setze Nennkapazität für Bewertung</translation>
     </message>
     <message>
         <source>nominal {} mAh</source>
@@ -310,6 +390,10 @@
     <message>
         <source>Rating</source>
         <translation>Bewertung</translation>
+    </message>
+    <message>
+        <source>Delete ({})</source>
+        <translation>Löschen ({})</translation>
     </message>
     <message>
         <source>New battery …</source>
@@ -372,22 +456,8 @@
         <translation>(Akku wählen)</translation>
     </message>
     <message>
-        <source>Delete battery</source>
-        <translation>Akku löschen</translation>
-    </message>
-    <message>
-        <source>Delete battery {}?
-Its sessions are kept, but no longer assigned to a battery.</source>
-        <translation>Akku {} löschen?
-Die Vorgänge bleiben erhalten, sind dann aber keinem Akku mehr zugeordnet.</translation>
-    </message>
-    <message>
         <source>New model …</source>
         <translation>Neues Modell …</translation>
-    </message>
-    <message>
-        <source>Search (maker, model, type) …</source>
-        <translation>Suchen (Hersteller, Modell, Typ) …</translation>
     </message>
     <message>
         <source>Batteries</source>
@@ -396,20 +466,6 @@ Die Vorgänge bleiben erhalten, sind dann aber keinem Akku mehr zugeordnet.</tra
     <message>
         <source>Note</source>
         <translation>Notiz</translation>
-    </message>
-    <message>
-        <source>Delete model</source>
-        <translation>Modell löschen</translation>
-    </message>
-    <message>
-        <source>Delete model {}?
-Batteries of this model keep maker, type and capacity.</source>
-        <translation>Modell {} löschen?
-Akkus dieses Modells behalten Hersteller, Typ und Kapazität.</translation>
-    </message>
-    <message>
-        <source>Not tested on a real charger.</source>
-        <translation>Nicht am Gerät getestet.</translation>
     </message>
     <message>
         <source>Mode, chemistry, voltage, current, mAh, internal resistance, temperature, progress, input voltage. They do not tell AA from AAA. The app finds out the number of slots itself.</source>
@@ -484,12 +540,56 @@ Akkus dieses Modells behalten Hersteller, Typ und Kapazität.</translation>
         <translation>&lt;b&gt;Air-Ladegerät wird nicht gefunden?&lt;/b&gt; Die App &lt;b&gt;„ISD Link“&lt;/b&gt; auf dem Handy beenden (oder am Handy Bluetooth ausschalten). Das Ladegerät nimmt nur eine Bluetooth-Verbindung an und ist für andere unsichtbar, solange das Handy verbunden ist. Umgekehrt kommt ISD Link nicht dran, solange BattBench verbunden ist.</translation>
     </message>
     <message>
+        <source>Delete all deleted entries for good ({} batteries, {} models)? Sessions and readings are kept. This cannot be undone.</source>
+        <translation>Alle gelöschten Einträge endgültig löschen ({} Akkus, {} Modelle)? Vorgänge und Messwerte bleiben erhalten. Das lässt sich nicht rückgängig machen.</translation>
+    </message>
+    <message>
         <source>takes effect after a restart</source>
         <translation>gilt nach einem Neustart</translation>
     </message>
     <message>
         <source>{} – {} via {}</source>
         <translation>{} – {} über {}</translation>
+    </message>
+    <message>
+        <source>– all models –</source>
+        <translation>– alle Modelle –</translation>
+    </message>
+    <message>
+        <source>the charger is still working (optionally shown with whether it is charging or discharging right now)</source>
+        <translation>das Ladegerät arbeitet noch (optional mit Anzeige, ob gerade geladen oder entladen wird)</translation>
+    </message>
+    <message>
+        <source>Delete {} {}? Deleted entries are hidden but kept and can be shown again (Settings).</source>
+        <translation>{} {} löschen? Gelöschte Einträge werden ausgeblendet, bleiben aber erhalten und lassen sich wieder anzeigen (Einstellungen).</translation>
+    </message>
+    <message>
+        <source>Delete the already deleted entry for good? This cannot be undone.</source>
+        <translation>Den bereits gelöschten Eintrag endgültig löschen? Das lässt sich nicht rückgängig machen.</translation>
+    </message>
+    <message>
+        <source>Delete {} already deleted entries for good? This cannot be undone.</source>
+        <translation>{} bereits gelöschte Einträge endgültig löschen? Das lässt sich nicht rückgängig machen.</translation>
+    </message>
+    <message>
+        <source>battery</source>
+        <translation>Akku</translation>
+    </message>
+    <message>
+        <source>batteries</source>
+        <translation>Akkus</translation>
+    </message>
+    <message>
+        <source>Search (maker, model, type, note) …</source>
+        <translation>Suchen (Hersteller, Modell, Typ, Notiz) …</translation>
+    </message>
+    <message>
+        <source>model</source>
+        <translation>Modell</translation>
+    </message>
+    <message>
+        <source>models</source>
+        <translation>Modelle</translation>
     </message>
     <message>
         <source>Supported chargers, Bluetooth search</source>
@@ -526,6 +626,26 @@ Akkus dieses Modells behalten Hersteller, Typ und Kapazität.</translation>
     <message>
         <source>No Bluetooth charger found yet.</source>
         <translation>Noch kein Bluetooth-Ladegerät gefunden.</translation>
+    </message>
+    <message>
+        <source>Show deleted batteries and models (grey, “(deleted)”)</source>
+        <translation>Gelöschte Akkus und Modelle anzeigen (grau, „(gelöscht)“)</translation>
+    </message>
+    <message>
+        <source>Deleting an entry shown as deleted removes it for good.</source>
+        <translation>Wird ein als gelöscht angezeigter Eintrag gelöscht, ist er endgültig weg.</translation>
+    </message>
+    <message>
+        <source>Deleted entries:</source>
+        <translation>Gelöschte Einträge:</translation>
+    </message>
+    <message>
+        <source>Delete all deleted entries for good …</source>
+        <translation>Alle gelöschten Einträge endgültig löschen …</translation>
+    </message>
+    <message>
+        <source>There are no deleted entries.</source>
+        <translation>Es gibt keine gelöschten Einträge.</translation>
     </message>
     <message>
         <source>Version:</source>
@@ -602,6 +722,10 @@ Akkus dieses Modells behalten Hersteller, Typ und Kapazität.</translation>
     <message>
         <source>Settings</source>
         <translation>Einstellungen</translation>
+    </message>
+    <message>
+        <source>Help</source>
+        <translation>Hilfe</translation>
     </message>
     <message>
         <source>Info</source>
@@ -835,20 +959,28 @@ Akkus dieses Modells behalten Hersteller, Typ und Kapazität.</translation>
         <translation>Ladewirkungsgrad {pct} %</translation>
     </message>
     <message>
-        <source>internal resistance {res} (low)</source>
-        <translation>Innenwiderstand {res} (niedrig)</translation>
+        <source>internal resistance {res} mΩ: {quality} (lower is better)</source>
+        <translation>Innenwiderstand {res} mΩ: {quality} (niedriger ist besser)</translation>
     </message>
     <message>
-        <source>internal resistance {res} (raised)</source>
-        <translation>Innenwiderstand {res} (erhöht)</translation>
+        <source>poor</source>
+        <translation>schlecht</translation>
     </message>
     <message>
-        <source>internal resistance {res} (high)</source>
-        <translation>Innenwiderstand {res} (hoch)</translation>
+        <source>medium</source>
+        <translation>mittel</translation>
+    </message>
+    <message>
+        <source>very poor</source>
+        <translation>sehr schlecht</translation>
     </message>
     <message>
         <source>task not finished yet</source>
         <translation>Vorgang noch nicht abgeschlossen</translation>
+    </message>
+    <message>
+        <source>discharge running: {mah} mAh so far</source>
+        <translation>Entladung läuft: bisher {mah} mAh</translation>
     </message>
     <message>
         <source>task {status}, result incomplete</source>

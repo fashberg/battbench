@@ -19,6 +19,9 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
   cells are `SortItem`s with `SORT_ROLE` (sort key, `None` = empty, never mix numbers and text in one column) and
   optionally `FILTER_ROLE` (value in the filter list, e.g. the day of a date).
 - `battbench/version.py` – version text with git commit, author and links.
+- Built-in help (tab *Help*): the README section between `<!-- help … -->` and `<!-- /help -->`; `update.py` copies it
+  to `battbench/help/help_en.md`. `help_de.md` is translated by hand – after changing the README user guide, update
+  it and run `update.py --help-translated` (otherwise update.py prints a NOTE).
 - `packaging/` – PyInstaller spec, NSIS installer, icon, `build.ps1`; `run.bat` / `run.sh` – start from source.
 
 ## Run and test
@@ -60,5 +63,7 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
 
 ## Release build (Windows)
 `powershell -ExecutionPolicy Bypass -File packaging\build.ps1` → `build\BattBench-<version>-setup.exe` (needs NSIS 3).
+`packaging/release.py [--version 2026.10] [--dry-run] [--no-build]`: clean tree required; sets `__version__`, commits
+"Release …", tags `v…`, runs build.ps1, asks before pushing. Interactive – the user runs it, not Claude.
 The installer is per-user (no admin), adds a Start menu entry and an optional desktop shortcut; uninstall asks whether
 to delete the database. Silent: `/S`, target folder `/D=…`.

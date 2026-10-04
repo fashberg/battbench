@@ -12,6 +12,7 @@ a = Analysis(
     datas=[
         (os.path.join(ROOT, 'battbench', 'translations', '*.qm'), 'battbench/translations'),
         (os.path.join(ROOT, 'battbench', 'resources', '*.svg'), 'battbench/resources'),
+        (os.path.join(ROOT, 'battbench', 'help', '*.md'), 'battbench/help'),
     ],
     hiddenimports=collect_submodules('winrt') + collect_submodules('bleak.backends.winrt'),
     excludes=['tkinter', 'matplotlib', 'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets', 'PySide6.QtQml',

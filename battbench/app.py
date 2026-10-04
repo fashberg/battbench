@@ -19,14 +19,17 @@ from datetime import datetime
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import (QByteArray, QEvent, QObject, QPointF, QSettings, QSortFilterProxyModel, Qt, QThread, QRectF,
-                            QTimer, Signal)
-from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import (QByteArray, QEvent, QObject, QPointF, QRectF, QRegularExpression, QSettings, QSize,
+                            QSortFilterProxyModel, Qt, QThread, QTimer, Signal)
+from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QPainter, QPen, QPixmap,
+                           QRegularExpressionValidator)
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QCompleter, QDialog, QDialogButtonBox,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter, QDialog, QDialogButtonBox,
                                QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-                               QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
-                               QSpinBox, QStackedWidget, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+                               QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
+                               QSpinBox, QStackedWidget, QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem,
+                               QTabWidget, QTableWidget, QTableWidgetItem, QTextBrowser, QToolButton, QVBoxLayout,
+                               QWidget)
 
 from . import __version__
 from .version import AUTHOR, SOURCE, WEBSITE, full_version
@@ -34,10 +37,12 @@ from .autofilter import FILTER_ROLE, SEARCH_ROLE, SORT_ROLE, AutoFilter, SortIte
 from .db import DB, SESSION_FIELDS
 from .device import UsbInfo, open_charger, usb_devices
 from .device_ble import BleManager
+from . import i18n
 from .i18n import LANGUAGES, install, pick_language, tr, tr_data
 from .model import DONE as DONE_MODES
-from .model import (CHARGE, DISCHARGE, GAP_SECS, GRADES, MODE_NAMES, NO_GRADE, NOMINAL, PHASE_MIN_MA, Session, Tracker,
-                    note_text, rate_values)
+from .model import (ABORTED, CHARGE, DISCHARGE, FINISHED, GAP_SECS, GRADES, MODE_NAMES, NO_GRADE, NOMINAL,
+                    PHASE_MIN_MA, REMOVED, RES_QUALITY, RUNNING, TASKS, Session, Tracker, measuring, note_text,
+                    rate_values, res_level)
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 ICON = os.path.join(PKG, 'resources', 'battbench.svg')
@@ -120,10 +125,19 @@ def fmt_dur(secs):
     return f'{secs // 3600}:{secs % 3600 // 60:02d} h'
 
 
+def is_measuring(d):
+    """Discharge of a session dict still running (no rating yet). Without the phases (table rows) the stored
+    rating tells: a running session with a discharge capacity but no grade is being measured."""
+    if d.get('phases') is not None:
+        return measuring(d['status'], [ph[0] for ph in d['phases']])
+    return d['status'] == RUNNING and bool(d['discharge_mah']) and (d['grade'] or NO_GRADE) == NO_GRADE
+
+
 def note_of(d):
     """Rating note of a session dict (live or from the DB) in the UI language."""
     nominal = d['nominal'] or NOMINAL.get(d['size'], 0)
-    return note_text(rate_values(d['discharge_mah'], nominal, d['charge_mah'], d['res_min'], d['status'])[1], tr_data)
+    return note_text(rate_values(d['discharge_mah'], nominal, d['charge_mah'], d['res_min'], d['status'],
+                                 is_measuring(d), d['chem'])[1], tr_data)
 
 
 def session_info(s: Session):
@@ -628,9 +642,85 @@ class SlotTile(QFrame):
         self.clicked.emit(self.key)
 
 
+# home symbol of the chart's reset button
+HOME_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="48" height="48" fill="none" '
+            'stroke="#444" stroke-width="2" stroke-linejoin="round" stroke-linecap="round">'
+            '<path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h5v-6h3v6h5V10"/></svg>')
+
+
 def fmt_hms(secs):
     secs = int(round(secs))
     return f'{secs // 3600}:{secs % 3600 // 60:02d}:{secs % 60:02d}' if secs >= 0 else ''
+
+
+class AxisViewBox(pg.ViewBox):
+    """View box of a right-hand value axis: lies over the chart but passes every mouse event on to the chart
+    (a plain ViewBox accepts all drags even with its mouse disabled, so the chart would never get them)."""
+
+    def __init__(self):
+        super().__init__(enableMenu=False)
+        self.setMouseEnabled(x=False, y=False)
+        self.setAcceptedMouseButtons(Qt.NoButton)
+
+    def mouseDragEvent(self, ev, axis=None):
+        ev.ignore()
+
+    def mouseClickEvent(self, ev):
+        ev.ignore()
+
+    def wheelEvent(self, ev, axis=None):
+        ev.ignore()
+
+
+class ChartViewBox(pg.ViewBox):
+    """Mouse in the chart: a drag with the left button draws a frame and zooms to its time range on release; once
+    zoomed in, a drag in the lower two thirds scrolls through time instead. The value axes follow automatically."""
+
+    def __init__(self):
+        super().__init__(enableMenu=False)
+        self.setAcceptHoverEvents(True)
+
+    def _zoomed_in(self):
+        """Less than the whole data range is shown (only then there is something to scroll)."""
+        lo, hi = self.state['limits']['xLimits']
+        if lo is None or hi is None:
+            return False
+        x0, x1 = self.viewRange()[0]
+        return (x1 - x0) < (hi - lo) * 0.99
+
+    def _in_frame_zone(self, pos):
+        """Frame (zoom) instead of scrolling: in the upper third, or anywhere while fully zoomed out."""
+        return pos.y() < self.height() / 3 or not self._zoomed_in()
+
+    def hoverEvent(self, ev):
+        if not ev.isExit():
+            self.setCursor(Qt.CrossCursor if self._in_frame_zone(ev.pos()) else Qt.OpenHandCursor)
+
+    def mouseClickEvent(self, ev):
+        if ev.button() == Qt.RightButton:                       # zoom out by 2 around the mouse (limits apply)
+            ev.accept()
+            self.scaleBy(x=2, center=self.mapToView(ev.pos()))
+        else:
+            super().mouseClickEvent(ev)
+
+    def mouseDragEvent(self, ev, axis=None):
+        if ev.button() != Qt.LeftButton:
+            return super().mouseDragEvent(ev, axis)
+        ev.accept()
+        start = ev.buttonDownPos()
+        if self._in_frame_zone(start):
+            a, b = sorted((start.x(), ev.pos().x()))
+            if ev.isFinish():
+                self.rbScaleBox.hide()
+                if b - a > 3:                                   # a real frame, not a slip of the mouse
+                    self.setXRange(self.mapToView(QPointF(a, 0)).x(), self.mapToView(QPointF(b, 0)).x(),
+                                   padding=0)
+            else:                                               # frame over the whole height
+                self.updateScaleBox(QPointF(a, 0), QPointF(b, self.height()))
+        else:
+            self.setCursor(Qt.ClosedHandCursor if not ev.isFinish() else Qt.OpenHandCursor)
+            dx = self.mapToView(ev.pos()).x() - self.mapToView(ev.lastPos()).x()
+            self.translateBy(x=-dx)
 
 
 class DurationAxis(pg.AxisItem):
@@ -655,8 +745,11 @@ class CurvePlot(pg.GraphicsLayoutWidget):
     """One chart of the whole session: voltage (left axis), current, mAh counter, internal resistance and
     temperature (axes on the right), each axis in the colour of its curve; x = duration. Phases shaded, legend on
     top, crosshair with values. Zooming / panning works on the time axis, the value axes follow the visible range."""
+    phase_changed = Signal(object)        # start time of the phase shown alone, None = whole run (chart click)
     SERIES = [('V', '#d62728'), ('mA', '#2ca02c'), ('mAh', '#1f77b4'), ('mΩ', '#9467bd'), ('°C', '#222222')]
     MIN_SPAN = {'°C': 10}
+    ZERO = (1, 2)                     # current and mAh counter: signed, zero line drawn, zeros at the same height
+    MIN_ZOOM = 60                     # s: zooming in stops at one minute (zooming out at the length of the data)
     GRID = '#9a9a9a'
 
     def __init__(self):
@@ -667,8 +760,11 @@ class CurvePlot(pg.GraphicsLayoutWidget):
         self.regions = []
         self.data = None
         self.t0 = 0
-        self.plot = p = pg.PlotItem(axisItems={'bottom': DurationAxis('bottom')})
-        self.ci.addItem(p, row=0, col=0)
+        self.plot = p = pg.PlotItem(viewBox=ChartViewBox(), axisItems={'bottom': DurationAxis('bottom')})
+        # rows: title, legend (outside the data area, so it never covers a curve), chart with its axes
+        self.title_label = pg.LabelItem('', color='#222', size='11pt')
+        self.ci.addItem(self.title_label, row=0, col=0, colspan=len(self.SERIES))
+        self.ci.addItem(p, row=2, col=0)
         self.vb = p.vb
         self.vb.setMouseEnabled(x=True, y=False)
         self.vb.setAutoVisible(y=True)
@@ -687,16 +783,15 @@ class CurvePlot(pg.GraphicsLayoutWidget):
                 vb, axis = self.vb, p.getAxis('left')
                 axis.setTickPen(grid_pen)
             else:
-                vb = pg.ViewBox(enableMenu=False)
-                vb.setMouseEnabled(x=False, y=False)
+                vb = AxisViewBox()
                 vb.setAutoVisible(y=True)
-                vb.setZValue(-1)                              # the main view box on top gets the mouse
+                vb.setZValue(-1)
                 vb.setXLink(self.vb)
                 self.scene().addItem(vb)
                 axis = pg.AxisItem('right')
                 axis.setTickPen(pg.mkPen(color))
                 axis.linkToView(vb)
-                self.ci.addItem(axis, row=0, col=i)
+                self.ci.addItem(axis, row=2, col=i)
                 self.vbs.append(vb)
             axis.setPen(pg.mkPen(color))
             axis.setTextPen(pg.mkPen(color))
@@ -710,18 +805,25 @@ class CurvePlot(pg.GraphicsLayoutWidget):
             if unit in self.MIN_SPAN:                         # 1 °C steps must not fill the whole height
                 vb.setLimits(minYRange=self.MIN_SPAN[unit])
             self.curves.append(curve)
+        self.zero_lines = {}
+        for k in self.ZERO:
+            line = pg.InfiniteLine(pos=0, angle=0, movable=False, pen=pg.mkPen('#666666', width=1))
+            self.vbs[k].addItem(line, ignoreBounds=True)
+            self.zero_lines[k] = line
         self.vb.sigResized.connect(self._sync)
+        self.vb.sigXRangeChanged.connect(lambda *_: self._align_zero())
         self.legend = pg.LegendItem(colCount=len(self.SERIES), brush=pg.mkBrush(255, 255, 255, 210),
                                     labelTextColor='#222')
-        self.legend.setParentItem(self.vb)
-        self.legend.anchor((0.5, 0), (0.5, 0), offset=(0, 4))
-        self.axes = [p.getAxis('left')] + [self.ci.getItem(0, i) for i in range(1, len(self.SERIES))]
+        self.legend.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)      # as wide as its entries, centred
+        self.ci.addItem(self.legend, row=1, col=0, colspan=len(self.SERIES))
+        self.ci.layout.setAlignment(self.legend, Qt.AlignHCenter)
+        self.axes = [p.getAxis('left')] + [self.ci.getItem(2, i) for i in range(1, len(self.SERIES))]
         for i, (curve, name) in enumerate(zip(self.curves, names)):
             self.legend.addItem(curve, name)
             sample, label = self.legend.items[i]
-            # like Grafana: a click on a legend entry shows / hides that value
-            sample.mouseClickEvent = label.mouseClickEvent = lambda ev, i=i: (ev.accept(), self.toggle(i))
-            for item in (sample, label):
+            # like Grafana: hovering a legend entry highlights the value, a click shows / hides it; its axis does the same
+            for item in (sample, label, self.axes[i]):
+                item.mouseClickEvent = lambda ev, i=i: (ev.accept(), self.toggle(i))
                 item.setCursor(Qt.PointingHandCursor)
                 item.setAcceptHoverEvents(True)
                 item.hoverEvent = lambda ev, i=i: self.highlight(None if ev.isExit() else i)
@@ -738,10 +840,25 @@ class CurvePlot(pg.GraphicsLayoutWidget):
         self.vb.addItem(self.info, ignoreBounds=True)
         self.info.hide()
         self.scene().sigMouseMoved.connect(self._mouse)
+        self.scene().sigMouseClicked.connect(self._clicked)
+        self.phase_sel = None                 # start time of the phase shown alone (click on a shaded phase)
+        self.session_start = None
+        self._raw = ([], [], '')
+        self.reset_btn = QToolButton(self)    # bottom left, below the voltage axis; only while zoomed / hidden
+        self.reset_btn.setIcon(QIcon(QPixmap.fromImage(QImage.fromData(QByteArray(HOME_SVG.encode())))))
+        self.reset_btn.setIconSize(QSize(20, 20))
+        self.reset_btn.setAutoRaise(True)
+        self.reset_btn.setToolTip(tr('Reset view'))
+        self.reset_btn.setCursor(Qt.PointingHandCursor)
+        self.reset_btn.clicked.connect(self.reset_view)
+        self.reset_btn.hide()
+        self.vb.sigXRangeChanged.connect(lambda *_: self._update_reset())
 
     def toggle(self, i):
         self.shown[i] = not self.shown[i]
         self._show_series(i)
+        self._align_zero()
+        self._update_reset()
         QSettings('battbench', 'battbench').setValue(
             'hidden_series', ','.join(unit for (unit, _c), on in zip(self.SERIES, self.shown) if not on))
 
@@ -762,6 +879,9 @@ class CurvePlot(pg.GraphicsLayoutWidget):
         for item in (self.curves[i], self.axes[i]):
             item.setOpacity(dim)
         self.curves[i].setVisible(on)
+        if i in self.zero_lines:
+            self.zero_lines[i].setVisible(on)
+            self.zero_lines[i].setOpacity(dim)
         if i:
             self.axes[i].setVisible(on)
             self.axes[i].setMaximumWidth(58 if on else 0)          # no empty gap for a hidden axis
@@ -769,10 +889,41 @@ class CurvePlot(pg.GraphicsLayoutWidget):
             color = self.SERIES[0][1] if on else '#bbbbbb'
             self.axes[0].setTextPen(pg.mkPen(color))
             self.axes[0].setPen(pg.mkPen(color))
+        unit, color = self.SERIES[i]
+        bold = {'font-weight': 'bold'} if self.focus == i else {}
+        self.axes[i].setLabel(f'{self.names[i]} ({unit})', color=color if on else '#bbbbbb', **bold)
         sample, label = self.legend.items[i]
         label.setText(self.names[i], color='#222' if on else '#aaaaaa', bold=self.focus == i)
         label.setOpacity(dim)
         sample.setOpacity((1 if on else 0.3) * dim)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if not hasattr(self, 'reset_btn'):    # resized while being built
+            return
+        self.reset_btn.adjustSize()
+        self.reset_btn.move(6, self.height() - self.reset_btn.height() - 6)
+
+    def reset_view(self):
+        """Whole time range and all values shown again."""
+        for i, on in enumerate(self.shown):
+            if not on:
+                self.toggle(i)
+        self.vb.enableAutoRange()
+        for k, vb in enumerate(self.vbs):
+            if k not in self.ZERO:
+                vb.enableAutoRange(axis='y')
+        self._align_zero()
+        self._update_reset()
+
+    def _update_reset(self):
+        """The home button only while there is something to reset: zoomed in or a value hidden."""
+        zoomed = False
+        if self.data is not None and len(self.data[0]) > 1:
+            x0, x1 = self.vb.viewRange()[0]
+            span = self.data[0][-1] - self.data[0][0]
+            zoomed = span > 0 and (x1 - x0) < span * 0.99
+        self.reset_btn.setVisible(bool(zoomed) or not all(self.shown))
 
     def _sync(self):
         """The extra view boxes cover exactly the main one."""
@@ -783,13 +934,47 @@ class CurvePlot(pg.GraphicsLayoutWidget):
     def clear_data(self, title=''):
         self.set_data([], [], title)
 
+    def _clicked(self, ev):
+        """Click on a shaded phase: show only that phase (time from 0:00:00); click again: the whole run."""
+        if ev.button() != Qt.LeftButton or ev.double() or self.data is None or \
+                not self.vb.sceneBoundingRect().contains(ev.scenePos()) or \
+                self.legend.sceneBoundingRect().contains(ev.scenePos()):
+            return
+        if self.phase_sel is not None:
+            self.phase_sel = None
+        else:
+            t = self.vb.mapSceneToView(ev.scenePos()).x() + self.t0
+            hit = [ph for ph in self._raw[1] if ph[1] <= t <= ph[2]]
+            if not hit:
+                return
+            self.phase_sel = hit[0][1]
+        self.set_data(*self._raw)
+        self.phase_changed.emit(self.phase_sel)
+
+    def show_phase(self, start):
+        """Show only the phase starting at start (None: the whole run); from the phase list."""
+        if start != self.phase_sel:
+            self.phase_sel = start
+            self.set_data(*self._raw)
+
     def set_data(self, rows, phases, title='', keep_view=False):
         """rows: (t, mv, ma, res, mah, temp, mode) from DB.samples; phases: (kind, start, end, mah)."""
+        start = rows[0][0] if rows else None
+        if start != self.session_start:              # another session: whole run again
+            self.session_start, self.phase_sel = start, None
+            keep_view = False
+        self._raw = (rows, phases, title)
+        phase = next((ph for ph in phases if ph[1] == self.phase_sel), None) if self.phase_sel is not None else None
+        if phase:
+            kind, a0, b0, _mah = phase
+            rows = [r for r in rows if a0 <= r[0] <= b0]
+            phases = [phase]
+            title = title + ' · ' + tr('phase: {} (click: whole run)').format(tr_data(kind))
         vr = self.vb.viewRange()[0] if keep_view and self.data is not None else None
         if rows:
             a = np.array(rows, dtype=float)
             if not vr:
-                self.t0 = a[0, 0]
+                self.t0 = phase[1] if phase else a[0, 0]
             x = a[:, 0] - self.t0
             res = a[:, 3].copy()
             res[res <= 0] = np.nan
@@ -815,19 +1000,56 @@ class CurvePlot(pg.GraphicsLayoutWidget):
             r.setZValue(-10)
             self.vb.addItem(r, ignoreBounds=True)
             self.regions.append(r)
-        self.plot.setTitle(title, color='#222', size='11pt')
+        self.title_label.setText(title, color='#222', size='11pt')
         if self.data is not None:
             self._last_x = self.data[0][-1]
+        if self.data is not None and len(self.data[0]) > 1:
+            # zoom and pan only within the data: out to its whole length, in to MIN_ZOOM
+            x0, x1 = float(self.data[0][0]), float(self.data[0][-1])
+            span = max(x1 - x0, 1.0)
+            self.vb.setLimits(xMin=x0, xMax=x1, minXRange=min(self.MIN_ZOOM, span), maxXRange=span)
+        else:
+            self.vb.setLimits(xMin=None, xMax=None, minXRange=None, maxXRange=None)
         if vr is None:
-            for vb in self.vbs:
-                vb.enableAutoRange()
+            self.vb.enableAutoRange()
         elif follow:                                 # live view: keep the zoom width, scroll along
             w = vr[1] - vr[0]
             self.vb.setXRange(self._last_x - w + 1, self._last_x + 1, padding=0)
-        for vb in self.vbs:
-            vb.enableAutoRange(axis='y')
+        for k, vb in enumerate(self.vbs):
+            if k not in self.ZERO:
+                vb.enableAutoRange(axis='y')
+        self._align_zero()
 
     _last_x = 0
+
+    def _align_zero(self):
+        """Value ranges of current and mAh counter (visible part of the run) so that both zeros lie on one height:
+        each axis is [-p * s, (1 - p) * s] with a common share p below zero; p is picked to waste least space."""
+        if self.data is None:
+            return
+        xs = self.data[0]
+        x0, x1 = self.vb.viewRange()[0]
+        a, b = np.searchsorted(xs, [x0, x1])
+        spans = []
+        for k in self.ZERO:
+            ys = self.data[k + 1][max(a - 1, 0):b + 1]
+            ys = ys[~np.isnan(ys)]
+            if not self.shown[k]:
+                continue
+            up = max(float(ys.max()), 0) if len(ys) else 0
+            down = max(-float(ys.min()), 0) if len(ys) else 0
+            spans.append((k, up or (0 if down else 1), down))
+
+        def scales(p):
+            return [max(down / p, up / (1 - p)) for _k, up, down in spans]
+
+        shares = [min(max(down / (up + down), 0.05), 0.95) for _k, up, down in spans]
+        if not shares:
+            return
+        p = min(shares, key=lambda p: sum(sc / (up + down) for sc, (_k, up, down) in zip(scales(p), spans)))
+        for sc, (k, _up, _down) in zip(scales(p), spans):
+            sc *= 1.06                               # a little room above / below
+            self.vbs[k].setYRange(-p * sc, (1 - p) * sc, padding=0)
 
     def _near(self, pos, x, px=6):
         """Series whose curve passes within px pixels of the mouse, or None."""
@@ -916,42 +1138,85 @@ class _WordFilter(QSortFilterProxyModel):
         return all(w in text for w in self.words)
 
 
-class SearchCombo(QComboBox):
-    """Dropdown with all entries; typing filters it (e.g. "ene pro aaa"). Entries keep their item data,
-    a typed text that matches nothing is reverted to the current entry."""
+class ListDelegate(QStyledItemDelegate):
+    """Selected entries of lists and table rows: light background and a thin accent bar 1 px from the left edge of
+    the first column, with room before the text (the Windows 11 style draws a thick bar right against the text of
+    every cell)."""
+    BAR, GAP = 2, 1
+
+    def paint(self, p, option, index):
+        o = QStyleOptionViewItem(option)
+        self.initStyleOption(o, index)
+        selected = bool(o.state & QStyle.State_Selected)
+        hover = bool(o.state & QStyle.State_MouseOver)
+        o.state &= ~(QStyle.State_Selected | QStyle.State_MouseOver | QStyle.State_HasFocus)
+        accent = o.palette.highlight().color()
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        if selected or hover:
+            fill = QColor(accent)
+            fill.setAlpha(45 if selected else 22)
+            p.setPen(Qt.NoPen)
+            p.setBrush(fill)
+            p.drawRoundedRect(QRectF(o.rect).adjusted(1, 1, -1, -1), 3, 3)
+        if selected and index.column() == 0:
+            r = o.rect
+            p.setBrush(accent)
+            p.drawRoundedRect(QRectF(r.left() + self.GAP, r.top() + r.height() * 0.25, self.BAR, r.height() * 0.5), 1, 1)
+        p.restore()
+        if index.column() == 0:
+            o.rect = o.rect.adjusted(self.GAP + self.BAR + 5, 0, 0, 0)
+        widget = option.widget
+        (widget.style() if widget else QApplication.style()).drawControl(QStyle.CE_ItemViewItem, o, p, widget)
+
+
+class EditCombo(QComboBox):
+    """Editable dropdown whose text gets selected when the field is entered (click or Tab), so typing replaces it.
+    A click into the field opens the list (the completer's popup, so typing still goes to the field)."""
 
     def __init__(self):
         super().__init__()
         self.setEditable(True)
         self.setInsertPolicy(QComboBox.NoInsert)
         self.setMaxVisibleItems(20)
+        self.lineEdit().installEventFilter(self)
+
+    def eventFilter(self, obj, e):
+        if obj is self.lineEdit():
+            if e.type() == QEvent.FocusIn and e.reason() != Qt.MouseFocusReason:
+                QTimer.singleShot(0, obj.selectAll)
+            elif e.type() == QEvent.MouseButtonRelease and e.button() == Qt.LeftButton:
+                obj.selectAll()                             # every click (after it placed the cursor): whole text
+                self.open_list()                            # selected and the list open
+        return super().eventFilter(obj, e)
+
+    def open_list(self):
+        comp = self.completer()
+        if comp and self.isEnabled():
+            comp.setCompletionPrefix('')
+            comp.complete()
+
+
+class SearchCombo(EditCombo):
+    """Dropdown with all entries; typing filters it (e.g. "ene pro aaa"). Entries keep their item data,
+    a typed text that matches nothing is reverted to the current entry."""
+
+    def __init__(self):
+        super().__init__()
         self.proxy = _WordFilter(self)
         self.proxy.setSourceModel(self.model())
         self.comp = QCompleter(self.proxy, self)
         self.comp.setCompletionMode(QCompleter.UnfilteredPopupCompletion)
         self.comp.setMaxVisibleItems(20)
+        self.comp.popup().setItemDelegate(ListDelegate(self.comp.popup()))
         self.setCompleter(self.comp)          # QComboBox maps a picked popup row back through the proxy itself
         self.lineEdit().textEdited.connect(self._typed)
         self.lineEdit().editingFinished.connect(self._revert)
         self.lineEdit().setPlaceholderText(tr('type to search …'))
-        self.lineEdit().installEventFilter(self)
 
-    def eventFilter(self, obj, e):
-        """Entering the field (click or Tab) selects its text, so typing starts a new search right away."""
-        if obj is self.lineEdit():
-            if e.type() == QEvent.FocusIn and e.reason() != Qt.MouseFocusReason:
-                QTimer.singleShot(0, obj.selectAll)
-            elif e.type() == QEvent.MouseButtonRelease and self._select_on_release:
-                self._select_on_release = False             # the click itself places the cursor: select afterwards
-                obj.selectAll()
-        return super().eventFilter(obj, e)
-
-    _select_on_release = False
-
-    def focusInEvent(self, e):
-        # a click into the text field gives the focus to the combo box (the field's focus proxy), not to the field
-        self._select_on_release = e.reason() == Qt.MouseFocusReason
-        super().focusInEvent(e)
+    def open_list(self):
+        self.proxy.set_text('')                             # all entries
+        super().open_list()
 
     def _typed(self, text):
         self.proxy.set_text(text)
@@ -971,6 +1236,54 @@ class SearchCombo(QComboBox):
             else:
                 self.setEditText(self.itemText(self.currentIndex()))
         self.proxy.set_text('')
+
+
+class NominalCombo(EditCombo):
+    """Nominal capacity: suggestions 500-3000 mAh in steps of 100, any number can be typed. committed(mAh) is
+    emitted when a value is picked or the field is left with Enter / Tab / a click elsewhere; 0 = not set."""
+    committed = Signal(int)
+
+    def __init__(self):
+        super().__init__()
+        for v in range(500, 3001, 100):
+            self.addItem(f'{v} mAh', v)
+        # click: all suggestions; typing: only matching ones, none preselected, so "24" + Enter stays 24
+        self.comp = QCompleter(self.model(), self)
+        self.comp.setCompletionMode(QCompleter.PopupCompletion)
+        self.comp.setMaxVisibleItems(15)
+        self.comp.popup().setItemDelegate(ListDelegate(self.comp.popup()))
+        self.setCompleter(self.comp)
+        self.comp.activated[str].connect(self._picked)
+        self.lineEdit().setValidator(QRegularExpressionValidator(QRegularExpression(r'\s*\d{0,5}\s*(m|mA|mAh)?\s*')))
+        self.last = 0
+        self.activated.connect(lambda _i: self._commit())
+        self.lineEdit().editingFinished.connect(self._commit)
+
+    def open_list(self):
+        if self.isEnabled():
+            self.comp.setCompletionPrefix('')
+            self.comp.complete()
+
+    def _picked(self, text):
+        self.setEditText(text)
+        self._commit()
+
+    def value(self):
+        digits = ''.join(c for c in self.currentText() if c.isdigit())
+        return int(digits) if digits else 0
+
+    def set_value(self, mah, placeholder):
+        self.last = mah or 0
+        self.lineEdit().setPlaceholderText(placeholder)
+        self.setCurrentIndex(-1)
+        self.setEditText(f'{mah} mAh' if mah else '')
+
+    def _commit(self):
+        v = self.value()
+        self.setEditText(f'{v} mAh' if v else '')
+        if v != self.last:
+            self.last = v
+            self.committed.emit(v)
 
 
 class ModelDialog(QDialog):
@@ -1019,10 +1332,12 @@ class ModelDialog(QDialog):
         if not v['name']:
             QMessageBox.warning(self, tr('Model'), tr('Please enter a model name.'))
             return
-        other = self.db.find_model(v['maker'], v['name'])
+        other, deleted = self.db.find_model(v['maker'], v['name'])
         if other is not None and other != v['id']:
-            QMessageBox.warning(self, tr('Model'), tr('{} already exists.').format(f"{v['maker']} {v['name']}"))
-            return
+            if not deleted or v['id'] is not None:
+                QMessageBox.warning(self, tr('Model'), tr('{} already exists.').format(f"{v['maker']} {v['name']}"))
+                return
+            v['id'] = other                                   # a deleted model of that name: bring it back
         self.result_id, self.batteries = self.db.save_model(v)
         self.accept()
 
@@ -1092,7 +1407,7 @@ class BatteryDialog(QDialog):
         self.model.blockSignals(True)
         self.model.clear()
         self.model.addItem(tr('– no model (enter values by hand) –'), None)
-        for mid, maker, name, typ, cap, _note, _n in self.db.models():
+        for mid, maker, name, typ, cap, _note, _n, _deleted in self.db.models():
             self.model.addItem(model_text(maker, name, cap, typ), mid)
         self.model.setCurrentIndex(max(self.model.findData(select), 0))
         self.model.blockSignals(False)
@@ -1132,7 +1447,7 @@ class BatteryDialog(QDialog):
             QMessageBox.warning(self, tr('Battery'), tr('Please choose a model or enter maker / type.'))
             return
         ids = [v['id']] if self.old_id is not None else list(range(v['id'], v['id'] + self.count.value()))
-        taken = [i for i in ids if i != self.old_id and self.db.battery(i)]
+        taken = [i for i in ids if i != self.old_id and self.db.battery(i, deleted=True)]   # also deleted ones
         if taken:
             QMessageBox.warning(self, tr('Battery'), tr('ID {} is already taken.').format(', '.join(map(str, taken))))
             return
@@ -1144,6 +1459,7 @@ class BatteryDialog(QDialog):
 
 class ResultPanel(QWidget):
     save = Signal(int, object, int)       # session id, battery id (None = none), nominal
+    phase_clicked = Signal(object)        # start time of the phase to show alone, None = whole run
     new_battery = Signal()
 
     def __init__(self, db: DB):
@@ -1170,25 +1486,42 @@ class ResultPanel(QWidget):
         lay.addWidget(self.grade)
         self.note = QLabel('')
         self.note.setWordWrap(True)
+        fn = QFont()
+        fn.setBold(True)
+        self.note.setFont(fn)
         lay.addWidget(self.note)
         form = QFormLayout()
         self.f = {}
+        tips = self.field_tips()
         for k, name in [('task', tr('Task')), ('status', tr('Status')), ('type', tr('Detected')), ('time', tr('Time')),
                         ('dis', tr('Discharge capacity')), ('chg', tr('Charge capacity')),
                         ('res', tr('Internal resistance')), ('temp', tr('Max. temperature'))]:
             self.f[k] = QLabel('')
             self.f[k].setTextInteractionFlags(Qt.TextSelectableByMouse)
             self.f[k].setWordWrap(True)
-            form.addRow(name + ':', self.f[k])
+            label = QLabel(name + ':')
+            for w in (label, self.f[k]):
+                w.setToolTip(tips.get(k, ''))
+            form.addRow(label, self.f[k])
         lay.addLayout(form)
         lay.addWidget(QLabel('<b>' + tr('Phases') + '</b>'))
         self.phases = QTableWidget(0, 4)
         self.phases.setHorizontalHeaderLabels([tr('Phase'), tr('Start'), tr('Duration'), 'mAh'])
         self.phases.verticalHeader().hide()
         self.phases.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.phases.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.phases.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.phases.setItemDelegate(ListDelegate(self.phases))
         self.phases.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.phases.setCursor(Qt.PointingHandCursor)
+        self.phases.setToolTip(tr('Click: show only this phase in the chart, click again: the whole run'))
+        self.phases.cellClicked.connect(self._phase_clicked)
+        self.phase_sel = None                 # start of the phase shown alone in the chart
         lay.addWidget(self.phases, 1)
         edit = QFormLayout()
+        self.model = SearchCombo()            # filters the battery list; locked to the battery's model once assigned
+        self.model.currentIndexChanged.connect(self._model_picked)
+        edit.addRow(tr('Model:'), self.model)
         row = QHBoxLayout()
         self.battery = SearchCombo()
         self.battery.currentIndexChanged.connect(self._battery_picked)
@@ -1200,53 +1533,145 @@ class ResultPanel(QWidget):
         self.binfo = QLabel('')
         self.binfo.setWordWrap(True)
         edit.addRow('', self.binfo)
-        self.nominal = QSpinBox()
-        self.nominal.setRange(0, 50000)
-        self.nominal.setSuffix(' mAh')
-        self.nominal.setSpecialValueText(tr('Default'))
+        self.nominal = NominalCombo()         # changes are saved at once (battery too), the session rated anew
+        self.nominal.committed.connect(lambda _v: self._save())
         edit.addRow(tr('Nominal capacity:'), self.nominal)
         lay.addLayout(edit)
-        self.btn = QPushButton(tr('Save / rate again'))
-        self.btn.clicked.connect(self._save)
-        lay.addWidget(self.btn)
+        self.reload_models()
         self.reload_batteries()
         self.show_session(None)
 
+    def reload_models(self):
+        keep = self.model.currentData()
+        self.model.blockSignals(True)
+        self.model.clear()
+        self.model.addItem(tr('– all models –'), None)
+        for mid, maker, name, typ, cap, _note, _n, _deleted in self.db.models():
+            self.model.addItem(model_text(maker, name, cap, typ), mid)
+        self.model.setCurrentIndex(max(self.model.findData(keep), 0))
+        self.model.blockSignals(False)
+
+    def _set_model(self, mid):
+        self.model.blockSignals(True)
+        self.model.setCurrentIndex(max(self.model.findData(mid), 0))
+        self.model.blockSignals(False)
+
+    def _lock_model(self):
+        """The model can be chosen only while no battery is assigned (then the battery's model is shown)."""
+        self.model.setEnabled(self.sid is not None and self.battery.currentData() is None)
+
     def reload_batteries(self, select=None):
-        """Refill the battery dropdown; select = battery id to pick (else keep the current one)."""
+        """Refill the battery dropdown with the batteries of the chosen model (all without a model);
+        select = battery id to pick (else keep the current one). An assigned battery sets the model."""
         keep = self.battery.currentData() if select is None else select
+        b = self.db.battery(keep, deleted=True) if keep not in (None, -1) else None
+        if b:
+            self._set_model(b['model_id'])
+        mid = self.model.currentData()
         self.battery.blockSignals(True)
         self.battery.clear()
         self.battery.addItem(tr('– no battery assigned –'), None)
         for r in self.db.batteries():
+            if mid is not None and r[9] != mid:
+                continue
             extra = ', '.join(x for x in (r[2], f'{r[3]} mAh' if r[3] else '', r[4]) if x)
             self.battery.addItem(f'#{r[0]} {r[1]}' + (f'  ({extra})' if extra else ''), r[0])
+        if b and b['deleted']:                # a deleted battery stays shown for its sessions (else it would be lost)
+            self.battery.addItem(f"#{b['id']} {b['name']}  " + tr('(deleted)'), b['id'])
         i = self.battery.findData(keep)
         self.battery.setCurrentIndex(max(i, 0))
         self.battery.blockSignals(False)
         self._show_binfo()
+        self._lock_model()
+
+    def _model_picked(self):
+        self.reload_batteries()
+        mid = self.model.currentData()
+        m = self.db.model(mid) if mid is not None else None
+        if m and m['capacity'] and self.battery.currentData() is None:      # rate against the model's capacity
+            self.nominal.set_value(m['capacity'], self.nominal.lineEdit().placeholderText())
+            self._save()
 
     def _show_binfo(self):
         bid = self.battery.currentData()
-        b = self.db.battery(bid) if bid is not None else None
+        b = self.db.battery(bid, deleted=True) if bid is not None else None
         self.binfo.setText(b['description'] if b else '')
         self.binfo.setVisible(bool(b and b['description']))
         return b
 
     def _battery_picked(self):
         b = self._show_binfo()
+        if b:
+            self._set_model(b['model_id'])
+        self._lock_model()
         if b and b['capacity']:
-            self.nominal.setValue(b['capacity'])
+            self.nominal.set_value(b['capacity'], self.nominal.lineEdit().placeholderText())
+        self._save()
 
     def _save(self):
         if self.sid is not None:
             self.save.emit(self.sid, self.battery.currentData(), self.nominal.value())
 
+    @staticmethod
+    def field_tips():
+        """Hover texts of the result fields: what the value means; legends for task and status."""
+        def legend(intro, rows):
+            return (f'<p>{intro}</p><table cellspacing="2">' +
+                    ''.join(f'<tr><td><b>{tr_data(k)}</b></td><td>{text}</td></tr>' for k, text in rows) + '</table>')
+
+        return {
+            'task': legend(tr('The task set on the charger:'), [
+                (TASKS[3], tr('charges the battery')),
+                (TASKS[5], tr('empties the battery and measures what it delivers')),
+                (TASKS[7], tr('brings the battery to its storage voltage')),
+                (TASKS[9], tr('charges and discharges several times')),
+                (TASKS[11], tr('charges, discharges (capacity measurement) and charges again')),
+                (TASKS[13], tr('several cycles to revive old or long-stored cells'))]),
+            'status': legend(tr('State of the session:'), [
+                (RUNNING, tr('the charger is still working (optionally shown with whether it is charging or '
+                             'discharging right now)')),
+                (FINISHED, tr('the charger has finished the task')),
+                (REMOVED, tr('the battery was taken out before the task was finished')),
+                (ABORTED, tr('the task was stopped or replaced by another one, or the data broke off'))]),
+            'dis': tr('<p>The capacity the battery delivered during the (last) discharge, measured by the charger. '
+                      'Compared with the nominal capacity it gives the rating: a healthy cell reaches 80 % or '
+                      'more.</p>'),
+            'chg': tr('<p>The charge put into the battery after the discharge (or during a plain charge). It is '
+                      'higher than the discharge capacity because charging has losses; discharge ÷ charge is the '
+                      'charge efficiency, typically 70–90 % for NiMH.</p>'),
+            'res': tr('<p>The internal resistance as the charger measures it – <b>lower is better</b>. It rises with '
+                      'age and wear; a high value lets the voltage drop under load, so the device switches off '
+                      'earlier. "min." is the lowest value of the session, first and last are the values at its '
+                      'start and end.</p>'),
+            'temp': tr('<p>The highest temperature of the battery during the session. NiMH cells get warm towards '
+                       'the end of charging, which is normal. Above about 45 °C the cell is stressed: check the '
+                       'contacts and the charging current.</p>'),
+        }
+
+    def _phase_clicked(self, row, _col):
+        start = self.phases.item(row, 0).data(Qt.UserRole)
+        start = None if start == self.phase_sel else start
+        self.mark_phase(start)
+        self.phase_clicked.emit(start)
+
+    def mark_phase(self, start):
+        """Highlight the phase shown alone in the chart (None: none)."""
+        self.phase_sel = start
+        self.phases.clearSelection()
+        for i in range(self.phases.rowCount()):
+            if self.phases.item(i, 0).data(Qt.UserRole) == start:
+                self.phases.selectRow(i)
+
+    @staticmethod
+    def _nominal_hint(d):
+        default = NOMINAL.get(d['size'], 0) if d else 0
+        return tr('default ({} mAh)').format(default) if default else tr('not set')
+
     def show_session(self, d, battery_id=None):
         """d: dict like session_info() / DB.session_dict()."""
         self.cur = d
         enabled = d is not None and d.get('id') is not None
-        for w in (self.btn, self.battery, self.nominal, self.nb):
+        for w in (self.battery, self.nominal, self.nb):
             w.setEnabled(enabled)
         if d is None:
             self.sid = None
@@ -1258,21 +1683,32 @@ class ResultPanel(QWidget):
                 w.setText('')
             self.phases.setRowCount(0)
             self.reload_batteries(select=-1)
-            self.nominal.setValue(0)
+            self.nominal.set_value(0, '')
+            self._lock_model()
             return
         same = self.sid == d.get('id')
         self.sid = d.get('id')
-        b = self.db.battery(battery_id) if battery_id is not None else None
+        b = self.db.battery(battery_id, deleted=True) if battery_id is not None else None
         slot = tr('Slot {}').format(d['slot'] + 1)
         self.title.setText(f"{self.dev_name(d.get('dev'))} · {slot} · {fmt_t(d['start'])}" +
                            (f" · #{b['id']} {b['name']}" if b else ''))
         g = d['grade'] or NO_GRADE
-        self.grade.setText(tr_data(g))
+        nominal = d['nominal'] or NOMINAL.get(d['size'], 0)
+        unrated = g == NO_GRADE and not nominal
+        pct = f" ({100 * d['discharge_mah'] / nominal:.0f} %)" if d['discharge_mah'] and nominal and g != NO_GRADE else ''
+        if is_measuring(d):                   # capacity not final yet: e.g. "Analyse läuft" in grey
+            g = NO_GRADE
+            self.grade.setText(tr_data(d['task']) + ' ' + tr_data(RUNNING))
+        else:
+            self.grade.setText(tr('Set the nominal capacity for a rating') if unrated else tr_data(g) + pct)
         self.grade.setStyleSheet(f"background:{GRADE_COLORS.get(g, '#888')}; color:white; padding:6px;"
-                                 'border-radius:6px;')
+                                 'border-radius:6px;' + ('font-size: 11pt;' if unrated else ''))
         self.note.setText(note_of(d))
         self.f['task'].setText(tr_data(d['task']))
-        self.f['status'].setText(tr_data(d['status']))
+        status = tr_data(d['status'])
+        if d['status'] == RUNNING and d.get('phases'):          # running: what it is doing right now
+            status += ' · ' + tr_data(MODE_NAMES[3] if d['phases'][-1][0] == CHARGE else MODE_NAMES[5])
+        self.f['status'].setText(status)
         self.f['type'].setText(' '.join(x for x in (d['chem'], d['size']) if x) +
                                (' · ' + tr('nominal {} mAh').format(d['nominal']) if d['nominal'] else ''))
         self.f['time'].setText(f"{fmt_t(d['start'])} – {datetime.fromtimestamp(d['end']):%H:%M} "
@@ -1284,22 +1720,29 @@ class ResultPanel(QWidget):
                                                                                 d['res_last']))
         else:
             self.f['res'].setText(tr('min. {} mΩ').format(d['res_min']) if d['res_min'] else '–')
+        if d['res_min']:                      # rating of the value; lower is better (not obvious to everyone)
+            self.f['res'].setText(self.f['res'].text() + '  –  ' + tr_data(RES_QUALITY[res_level(d['res_min'], d['chem'])]))
         self.f['temp'].setText(f"{d['temp_max']} °C" if d['temp_max'] else '–')
+        if not same:
+            self.phase_sel = None
         self.phases.setRowCount(len(d['phases']))
         for i, (kind, a, e, mah) in enumerate(d['phases']):
             for j, txt in enumerate([tr_data(kind), f'{datetime.fromtimestamp(a):%H:%M}', fmt_dur(e - a), str(mah)]):
                 it = QTableWidgetItem(txt)
                 if j == 0:
                     it.setForeground(QColor(PHASE_COLORS.get(kind, '#000')))
+                    it.setData(Qt.UserRole, a)
                 self.phases.setItem(i, j, it)
+        self.mark_phase(self.phase_sel)
         # refill the edit fields for a new session, or when the stored values changed and the user
         # hasn't touched the fields (don't overwrite what is being selected / typed)
         if not same or self.battery.currentData() == self.shown[0]:
             if not same or battery_id != self.shown[0]:
                 self.reload_batteries(select=battery_id if battery_id is not None else -1)
-        if not same or self.nominal.value() == self.shown[1]:
-            self.nominal.setValue(d['nominal'] or 0)
+        if not same or (not self.nominal.hasFocus() and self.nominal.value() == self.shown[1]):
+            self.nominal.set_value(d['nominal'] or 0, self._nominal_hint(d))
         self.shown = (battery_id, d['nominal'] or 0)
+        self._lock_model()
 
 
 def session_headers():
@@ -1318,6 +1761,7 @@ def make_table(headers, autofilter=False):
     t = QTableWidget(0, len(headers))
     t.autofilter = AutoFilter(t) if autofilter else None
     t.setHorizontalHeaderLabels(headers)
+    t.setItemDelegate(ListDelegate(t))
     t.verticalHeader().hide()
     t.setEditTriggers(QAbstractItemView.NoEditTriggers)
     t.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -1325,6 +1769,73 @@ def make_table(headers, autofilter=False):
     t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
     t.horizontalHeader().setStretchLastSection(True)
     return t
+
+
+def show_deleted():
+    """Setting: list soft-deleted batteries and models too (tab Settings)."""
+    return QSettings('battbench', 'battbench').value('show_deleted', False, type=bool)
+
+
+DELETED_ROLE = Qt.UserRole + 4            # first cell: the row is a soft-deleted entry
+
+
+def mark_deleted(items):
+    """Grey italic cells of a soft-deleted entry."""
+    for it in items:
+        it.setForeground(QColor('#999999'))
+        f = it.font()
+        f.setItalic(True)
+        it.setFont(f)
+
+
+def delete_rows(parent, table, what, soft, hard):
+    """Delete the selected rows: active ones softly, already deleted ones for good (after asking).
+    what: (singular, plural) for the question. Returns True if something was deleted."""
+    ids = selected_ids(table)
+    rows = {table.item(r, 0).data(Qt.UserRole): table.item(r, 0).data(DELETED_ROLE)
+            for r in range(table.rowCount())}
+    active = [i for i in ids if not rows.get(i)]
+    gone = [i for i in ids if rows.get(i)]
+    parts = []
+    if active:
+        parts.append(tr('Delete {} {}? Deleted entries are hidden but kept and can be shown again (Settings).')
+                     .format(len(active), what[0] if len(active) == 1 else what[1]))
+    if gone:
+        parts.append(tr('Delete the already deleted entry for good? This cannot be undone.') if len(gone) == 1 else
+                     tr('Delete {} already deleted entries for good? This cannot be undone.').format(len(gone)))
+    if not parts or QMessageBox.question(parent, tr('Delete'), '\n\n'.join(parts)) != QMessageBox.Yes:
+        return False
+    if active:
+        soft(active)
+    if gone:
+        hard(gone)
+    return True
+
+
+def selected_ids(table):
+    """Ids (first cell, Qt.UserRole) of the selected rows, in table order."""
+    rows = sorted({i.row() for i in table.selectionModel().selectedRows()})
+    return [table.item(r, 0).data(Qt.UserRole) for r in rows if not table.isRowHidden(r)]
+
+
+def row_menu(table, edit, delete):
+    """Right click on a row: Edit … / Delete; with several rows selected (Ctrl / Shift) only Delete."""
+    table.setContextMenuPolicy(Qt.CustomContextMenu)
+
+    def show(pos):
+        row = table.rowAt(pos.y())
+        if row < 0:
+            return
+        if not table.selectionModel().isRowSelected(row):
+            table.selectRow(row)
+        n = len(selected_ids(table))
+        menu = QMenu(table)
+        if n == 1:
+            menu.addAction(tr('Edit …'), edit)
+        menu.addAction(tr('Delete') if n == 1 else tr('Delete ({})').format(n), delete)
+        menu.exec(table.viewport().mapToGlobal(pos))
+
+    table.customContextMenuRequested.connect(show)
 
 
 def select_by_id(table, ident):
@@ -1365,14 +1876,17 @@ def _fill_session_rows(table, rows, cols):
         vals = {'start': (fmt_t(d['start']), d['start']), 'dev': (d['dev_name'] or '', (d['dev_name'] or '').lower()),
                 'slot': (d['slot'] + 1, d['slot']), 'task': (tr_data(d['task']), tr_data(d['task']).lower()),
                 'status': (tr_data(d['status']), tr_data(d['status']).lower()),
-                'battery': (battery_text(d['battery_id'], d['battery_name']), d['battery_id']),
+                'battery': (battery_text(d['battery_id'], d['battery_name']) +
+                            (' ' + tr('(deleted)') if d['battery_deleted'] and d['battery_id'] is not None else ''),
+                            d['battery_id']),
                 'detected': (' '.join(x for x in (d['chem'], d['size']) if x),
                              ' '.join(x for x in (d['chem'], d['size']) if x).lower()),
                 'nominal': (nominal or '', nominal or None), 'dis': (dis or '', dis or None),
                 'pct': (pct, 100 * dis / nominal if dis and nominal else None),
                 'chg': (d['charge_mah'] or '', d['charge_mah'] or None), 'rmin': (d['res_min'] or '', d['res_min'] or None),
                 'tmax': (d['temp_max'] or '', d['temp_max'] or None),
-                'grade': (tr_data(d['grade'] or NO_GRADE), GRADE_RANK.get(d['grade'], 0)),
+                'grade': (tr_data(RUNNING) if is_measuring(d) else tr_data(d['grade'] or NO_GRADE),
+                          GRADE_RANK.get(d['grade'], 0)),
                 'dur': (fmt_dur(d['end'] - d['start']), d['end'] - d['start'])}
         for j, c in enumerate(cols):
             text, key = vals[c]
@@ -1407,6 +1921,8 @@ class BatteryTab(QWidget):
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, fn=fn: fn())
             btns.addWidget(b)
+            if fn == self.edit:
+                self.edit_btn = b
         btns.addSpacing(20)
         self.search = QLineEdit()
         self.search.setPlaceholderText(tr('Search (ID, maker, model, type, description) …'))
@@ -1418,9 +1934,12 @@ class BatteryTab(QWidget):
                                  tr('Last mAh'), tr('Rating'), tr('Last measured'), tr('Last charged'),
                                  tr('Description')], autofilter=True)
         self.table.autofilter.extra = self._matches
+        self.table.autofilter.header.desc_first = {5, 8, 9}      # sessions, last measured, last charged
         self.table.sortByColumn(0, Qt.AscendingOrder)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)      # Ctrl / Shift: several, to delete
         self.table.itemSelectionChanged.connect(self.show_history)
         self.table.cellDoubleClicked.connect(lambda *_: self.edit())
+        row_menu(self.table, self.edit, self.delete)
         left.addWidget(self.table)
         lay.addLayout(left, 3)
         right = QVBoxLayout()
@@ -1442,15 +1961,16 @@ class BatteryTab(QWidget):
 
     def load(self, select=None):
         select = select if select is not None else self.selected()
-        rows = self.db.batteries()
+        rows = self.db.batteries(deleted=show_deleted())
         self.table.blockSignals(True)
         self.table.setSortingEnabled(False)       # rows would move while being filled
         self.table.setRowCount(len(rows))
         for i, (bid, name, maker, cap, typ, desc, n, last, grade, _mid, _mmaker, mname, t_meas,
-                t_chg) in enumerate(rows):
+                t_chg, deleted) in enumerate(rows):
             pct = f' ({100 * last / cap:.0f} %)' if last and cap else ''
-            cells = [(bid, bid), (maker, maker.lower()), (mname or '', (mname or '').lower()),
-                     (f'{cap} mAh' if cap else '', cap or None), (typ, typ.lower()), (n, n),
+            cells = [(f"{bid} {tr('(deleted)')}" if deleted else bid, bid), (maker, maker.lower()),
+                     (mname or '', (mname or '').lower()), (f'{cap} mAh' if cap else '', cap or None),
+                     (typ, typ.lower()), (n, n),
                      (f'{last}{pct}' if last else '', last), (tr_data(grade or ''), GRADE_RANK.get(grade)),
                      (fmt_t(t_meas), t_meas), (fmt_t(t_chg), t_chg),
                      ((desc or '').replace('\n', ' '), (desc or '').lower())]
@@ -1460,6 +1980,9 @@ class BatteryTab(QWidget):
                 if j == 0:
                     it.setData(Qt.UserRole, bid)
                     it.setData(SEARCH_ROLE, name)             # batteries without a model: "maker type"
+                    it.setData(DELETED_ROLE, bool(deleted))
+                if deleted:
+                    mark_deleted([it])
                 if j in (8, 9):
                     it.setData(FILTER_ROLE, fmt_day(key))
                 if j == 7 and grade:
@@ -1485,7 +2008,9 @@ class BatteryTab(QWidget):
         self.table.autofilter.apply()
 
     def show_history(self):
-        bid = self.selected()
+        ids = selected_ids(self.table)
+        self.edit_btn.setEnabled(len(ids) <= 1)
+        bid = ids[0] if len(ids) == 1 else None
         b = self.db.battery(bid) if bid is not None else None
         self.hist_title.setText('<b>' + tr('History') + (f" #{b['id']} {b['name']}</b>" if b else
                                                          '</b> ' + tr('(choose a battery)')))
@@ -1506,19 +2031,13 @@ class BatteryTab(QWidget):
         return self._run(BatteryDialog(self, self.db, prefill=prefill))
 
     def edit(self):
-        bid = self.selected()
-        if bid is not None:
-            self._run(BatteryDialog(self, self.db, battery=self.db.battery(bid)))
+        ids = selected_ids(self.table)
+        if len(ids) == 1:
+            self._run(BatteryDialog(self, self.db, battery=self.db.battery(ids[0])))
 
     def delete(self):
-        bid = self.selected()
-        if bid is None:
-            return
-        b = self.db.battery(bid)
-        if QMessageBox.question(self, tr('Delete battery'),
-                                tr('Delete battery {}?\nIts sessions are kept, but no longer assigned to a battery.')
-                                .format(f"#{bid} {b['name']}")) == QMessageBox.Yes:
-            self.db.delete_battery(bid)
+        if delete_rows(self, self.table, (tr('battery'), tr('batteries')), self.db.delete_batteries,
+                       self.db.hard_delete_batteries):
             self.load()
             self.changed.emit(-1)
 
@@ -1537,16 +2056,25 @@ class ModelTab(QWidget):
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, fn=fn: fn())
             top.addWidget(b)
+            if fn == self.edit:
+                self.edit_btn = b
         top.addSpacing(20)
         self.search = QLineEdit()
-        self.search.setPlaceholderText(tr('Search (maker, model, type) …'))
+        self.search.setPlaceholderText(tr('Search (maker, model, type, note) …'))
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter)
         top.addWidget(self.search, 1)
         lay.addLayout(top)
-        self.table = make_table([tr('Maker'), tr('Model'), tr('Type'), tr('Capacity'), tr('Batteries'), tr('Note')])
-        self.table.setSortingEnabled(True)
+        self.table = make_table([tr('Maker'), tr('Model'), tr('Type'), tr('Capacity'), tr('Batteries'), tr('Note')],
+                                autofilter=True)
+        self.table.autofilter.extra = self._matches
+        self.table.autofilter.header.desc_first = {4}
+        self.table.sortByColumn(0, Qt.AscendingOrder)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)      # Ctrl / Shift: several, to delete
+        self.table.itemSelectionChanged.connect(
+            lambda: self.edit_btn.setEnabled(len(selected_ids(self.table)) <= 1))
         self.table.cellDoubleClicked.connect(lambda *_: self.edit())
+        row_menu(self.table, self.edit, self.delete)
         lay.addWidget(self.table)
         self.load()
 
@@ -1557,27 +2085,34 @@ class ModelTab(QWidget):
 
     def load(self, select=None):
         select = select if select is not None else self.selected()
-        rows = self.db.models()
+        rows = self.db.models(deleted=show_deleted())
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
-        for i, (mid, maker, name, typ, cap, note, n) in enumerate(rows):
-            for j, v in enumerate([maker, name, typ, cap or '', n or '', note]):
-                it = QTableWidgetItem()
-                it.setData(Qt.DisplayRole, v)
+        for i, (mid, maker, name, typ, cap, note, n, deleted) in enumerate(rows):
+            cells = [(maker, maker.lower()), (f"{name} {tr('(deleted)')}" if deleted else name, name.lower()),
+                     (typ, (typ or '').lower()),
+                     (f'{cap} mAh' if cap else '', cap or None), (n or '', n or 0), (note, (note or '').lower())]
+            for j, (text, key) in enumerate(cells):
+                it = SortItem(str(text))
+                it.setData(SORT_ROLE, key)
                 if j == 0:
                     it.setData(Qt.UserRole, mid)
+                    it.setData(DELETED_ROLE, bool(deleted))
+                if deleted:
+                    mark_deleted([it])
                 self.table.setItem(i, j, it)
         self.table.setSortingEnabled(True)
-        for i in range(self.table.rowCount()):
-            if self.table.item(i, 0).data(Qt.UserRole) == select:
-                self.table.selectRow(i)
+        select_by_id(self.table, select)
         self._filter()
 
-    def _filter(self):
+    def _matches(self, row):
+        """Search field: every word in maker, model, type or note."""
         words = self.search.text().lower().split()
-        for i in range(self.table.rowCount()):
-            text = ' '.join(str(self.table.item(i, j).data(Qt.DisplayRole)) for j in range(3)).lower()
-            self.table.setRowHidden(i, not all(w in text for w in words))
+        text = ' '.join(self.table.item(row, j).text() for j in (0, 1, 2, 5)).lower()
+        return all(w in text for w in words)
+
+    def _filter(self):
+        self.table.autofilter.apply()
 
     def _run(self, dlg):
         if dlg.exec():
@@ -1588,19 +2123,13 @@ class ModelTab(QWidget):
         self._run(ModelDialog(self, self.db))
 
     def edit(self):
-        mid = self.selected()
-        if mid is not None:
-            self._run(ModelDialog(self, self.db, model=self.db.model(mid)))
+        ids = selected_ids(self.table)
+        if len(ids) == 1:
+            self._run(ModelDialog(self, self.db, model=self.db.model(ids[0])))
 
     def delete(self):
-        mid = self.selected()
-        if mid is None:
-            return
-        m = self.db.model(mid)
-        if QMessageBox.question(self, tr('Delete model'),
-                                tr('Delete model {}?\nBatteries of this model keep maker, type and capacity.')
-                                .format(f"{m['maker']} {m['name']}")) == QMessageBox.Yes:
-            self.db.delete_model(mid)
+        if delete_rows(self, self.table, (tr('model'), tr('models')), self.db.delete_models,
+                       self.db.hard_delete_models):
             self.load()
             self.changed.emit([])
 
@@ -1697,21 +2226,20 @@ class InfoDialog(QDialog):
 
     @staticmethod
     def supported():
-        untested = tr('Not tested on a real charger.')
         return [
             ('ISDT N8 / N16 / N24', 'USB',
              tr('Mode, chemistry, voltage, current, mAh, internal resistance, temperature, progress, input voltage. '
                 'They do not tell AA from AAA. The app finds out the number of slots itself.') + ' ' +
-             tr('N16 / N24 and the first generation: same protocol as the N8 expected.') + ' ' + untested),
+             tr('N16 / N24 and the first generation: same protocol as the N8 expected.')),
             ('ISDT C4 / C4 EVO', 'USB',
              tr('Mode, chemistry, voltage, current, mAh, internal resistance, temperature, progress. '
-                'C4 EVO also input voltage, but no size.') + ' ' + untested),
+                'C4 EVO also input voltage, but no size.')),
             ('ISDT A4 / UC4', 'USB',
-             tr('Like the C4; the app adds up the mAh from current × time.') + ' ' + untested),
-            ('ISDT A8 Air / C4 Air', 'Bluetooth', tr('Like the A4 Air over Bluetooth.') + ' ' + untested),
+             tr('Like the C4; the app adds up the mAh from current × time.')),
+            ('ISDT A8 Air / C4 Air', 'Bluetooth', tr('Like the A4 Air over Bluetooth.')),
             ('SkyRC MC3000 / MC5000', 'Bluetooth',
              tr('Status (charging / discharging / pause / done / error), operation, battery type, voltage, current, '
-                'mAh, time, temperature, internal resistance. Read only (no start / stop).') + ' ' + untested),
+                'mAh, time, temperature, internal resistance. Read only (no start / stop).')),
             ('ISDT A4 Air', tr('Bluetooth (recommended)'),
              tr('State (charging / full / error), charge level %, mAh and mWh from the charger, measured internal '
                 'resistance, voltage, current, input voltage. No temperature.')),
@@ -1815,11 +2343,28 @@ class InfoDialog(QDialog):
         self.bt_list.setText('<br>'.join(found) or tr('No Bluetooth charger found yet.'))
 
 
-class SettingsTab(QWidget):
-    """User settings (stored with QSettings)."""
+class HelpTab(QTextBrowser):
+    """User guide: the README section, as battbench/help/help_<language>.md (English if not translated)."""
 
     def __init__(self):
         super().__init__()
+        self.setOpenExternalLinks(True)
+        folder = os.path.join(PKG, 'help')
+        path = next((p for p in (os.path.join(folder, f'help_{i18n.current}.md'), os.path.join(folder, 'help_en.md'))
+                     if os.path.exists(p)), None)
+        if path:
+            with open(path, encoding='utf-8') as f:
+                self.setMarkdown(f.read())
+        self.document().setDocumentMargin(14)
+
+
+class SettingsTab(QWidget):
+    """User settings (stored with QSettings)."""
+    deleted_changed = Signal()            # show-deleted switched or deleted entries removed for good
+
+    def __init__(self, db: DB):
+        super().__init__()
+        self.db = db
         form = QFormLayout(self)
         row = QHBoxLayout()
         self.lang = QComboBox()
@@ -1834,6 +2379,33 @@ class SettingsTab(QWidget):
         row.addWidget(self.lang_note)
         row.addStretch(1)
         form.addRow(tr('Language:'), row)
+        self.show_del = QCheckBox(tr('Show deleted batteries and models (grey, “(deleted)”)'))
+        self.show_del.setChecked(show_deleted())
+        self.show_del.setToolTip(tr('Deleting an entry shown as deleted removes it for good.'))
+        self.show_del.toggled.connect(self._set_show_deleted)
+        form.addRow(tr('Deleted entries:'), self.show_del)
+        purge = QPushButton(tr('Delete all deleted entries for good …'))
+        purge.clicked.connect(self._purge)
+        row = QHBoxLayout()
+        row.addWidget(purge)
+        row.addStretch(1)
+        form.addRow('', row)
+
+    def _set_show_deleted(self, on):
+        QSettings('battbench', 'battbench').setValue('show_deleted', on)
+        self.deleted_changed.emit()
+
+    def _purge(self):
+        nb = self.db.con.execute('SELECT COUNT(*) FROM batteries WHERE deleted IS NOT NULL').fetchone()[0]
+        nm = self.db.con.execute('SELECT COUNT(*) FROM models WHERE deleted IS NOT NULL').fetchone()[0]
+        if not nb and not nm:
+            QMessageBox.information(self, tr('Delete'), tr('There are no deleted entries.'))
+            return
+        if QMessageBox.question(self, tr('Delete'), tr('Delete all deleted entries for good ({} batteries, {} models)? '
+                                                        'Sessions and readings are kept. This cannot be undone.')
+                                .format(nb, nm)) == QMessageBox.Yes:
+            self.db.purge_deleted()
+            self.deleted_changed.emit()
 
     def _set_lang(self):
         QSettings('battbench', 'battbench').setValue('lang', self.lang.currentData())
@@ -1932,7 +2504,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, db_path, source, a4='both', bt=True):
         super().__init__()
-        self.setWindowTitle('BattBench')
+        self.setWindowTitle(f'BattBench {__version__}')
         self.source, self.a4 = source, a4
         self.t_start = time.time()     # tiles only for chargers connected / sending data in this run
         self.resize(1500, 950)
@@ -1979,6 +2551,8 @@ class MainWindow(QMainWindow):
         self.result.dev_name = self.dev_name
         self.result.save.connect(self.save_meta)
         self.result.new_battery.connect(self.new_battery_for_session)
+        self.result.phase_clicked.connect(self.plot.show_phase)          # phase list and chart stay in step
+        self.plot.phase_changed.connect(self.result.mark_phase)
         hsplit.addWidget(self.result)
         hsplit.setSizes([1100, 400])
         vsplit.addWidget(hsplit)
@@ -2001,7 +2575,10 @@ class MainWindow(QMainWindow):
         self.dtab = DeviceTab(self.db)
         self.dtab.changed.connect(self.devices_renamed)
         self.tabs.addTab(self.dtab, tr('Chargers'))
-        self.tabs.addTab(SettingsTab(), tr('Settings'))
+        self.stab = SettingsTab(self.db)
+        self.stab.deleted_changed.connect(self.deleted_changed)
+        self.tabs.addTab(self.stab, tr('Settings'))
+        self.tabs.addTab(HelpTab(), tr('Help'))
         self.tabs.addTab(InfoTab(db_path), tr('Info'))
         vsplit.addWidget(self.tabs)
         vsplit.setSizes([200, 500, 250])
@@ -2277,9 +2854,18 @@ class MainWindow(QMainWindow):
         """Model added / edited / deleted: its batteries took over the capacity -> rate their sessions anew."""
         self.mtab.load()
         self.btab.load()
+        self.result.reload_models()
         self.result.reload_batteries()
         for bid in battery_ids:
             self.worker.cmds.put(('battery', bid))
+
+    def deleted_changed(self):
+        """Show-deleted switched or deleted entries purged: refill the lists."""
+        self.btab.load()
+        self.mtab.load()
+        self.result.reload_models()
+        self.result.reload_batteries()
+        self.load_tables()
 
     def devices_renamed(self):
         self.load_tables()
@@ -2305,6 +2891,13 @@ def main():
     a = ap.parse_args()
     source = 'offline' if a.offline else 'device'
     pg.setConfigOptions(antialias=True)
+    if sys.platform == 'win32':
+        # own taskbar entry with the BattBench icon instead of python.exe's (run from source)
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('Ashberg.BattBench')
+        except (AttributeError, OSError):
+            pass
     app = QApplication(sys.argv)
     app.setApplicationName('BattBench')
     app.setApplicationVersion(__version__)

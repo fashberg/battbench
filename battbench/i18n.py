@@ -13,6 +13,7 @@ except ImportError:                     # used without the GUI
     QCoreApplication = None
 
 LANGUAGES = {'en': 'English', 'de': 'Deutsch'}
+current = 'en'                          # language installed by install()
 DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'translations')
 
 
@@ -37,6 +38,8 @@ def pick_language(setting):
 
 def install(app, lang):
     """Load the app's and Qt's own translations (standard buttons) for lang; English needs none."""
+    global current
+    current = lang
     app.translators = []
     if lang == 'en':
         return
