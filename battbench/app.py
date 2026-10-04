@@ -1828,8 +1828,9 @@ def session_headers():
 GRADE_RANK = {g: len(GRADES) - i for i, g in enumerate(GRADES)}          # sort key: worst grade first
 
 
-def make_table(headers, autofilter=False):
-    """autofilter: sortable, with a filter button in every column header (table.autofilter)."""
+def make_table(headers, autofilter=False, stretch=True):
+    """autofilter: sortable, with a filter button in every column header (table.autofilter). stretch: the last
+    column takes the rest of the width (for a text column; not for e.g. a duration)."""
     t = QTableWidget(0, len(headers))
     t.autofilter = AutoFilter(t) if autofilter else None
     t.setHorizontalHeaderLabels(headers)
@@ -1839,7 +1840,7 @@ def make_table(headers, autofilter=False):
     t.setSelectionBehavior(QAbstractItemView.SelectRows)
     t.setSelectionMode(QAbstractItemView.SingleSelection)
     t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-    t.horizontalHeader().setStretchLastSection(True)
+    t.horizontalHeader().setStretchLastSection(stretch)
     return t
 
 
@@ -2027,7 +2028,7 @@ class BatteryTab(QWidget):
         self.hist_title = QLabel()
         right.addWidget(self.hist_title)
         heads = session_headers()
-        self.hist = make_table([heads[c] for c in self.HIST_COLS], autofilter=True)
+        self.hist = make_table([heads[c] for c in self.HIST_COLS], autofilter=True, stretch=False)
         self.hist.sortByColumn(0, Qt.DescendingOrder)
         self.hist.cellDoubleClicked.connect(
             lambda r, _c: self.open_session.emit(self.hist.item(r, 0).data(Qt.UserRole)))
@@ -2703,7 +2704,7 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         heads = session_headers()
-        self.table = make_table([heads[c] for c in self.COLS], autofilter=True)
+        self.table = make_table([heads[c] for c in self.COLS], autofilter=True, stretch=False)
         self.table.sortByColumn(0, Qt.DescendingOrder)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)      # Ctrl / Shift: several, to delete
         row_menu(self.table, None, self.delete_sessions, enter=self.result.battery.setFocus)
