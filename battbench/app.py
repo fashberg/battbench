@@ -1448,6 +1448,10 @@ class BatteryDialog(QDialog):
         self.model = SearchCombo()
         self.model.currentIndexChanged.connect(self._model_picked)
         row.addWidget(self.model, 1)
+        self.em = QPushButton(tr('Edit …'))
+        self.em.setToolTip(tr('Edit the chosen model'))
+        self.em.clicked.connect(self._edit_model)
+        row.addWidget(self.em)
         nm = QPushButton(tr('New …'))
         nm.setToolTip(tr('Create a new model'))
         nm.clicked.connect(self._new_model)
@@ -1480,7 +1484,7 @@ class BatteryDialog(QDialog):
             form.addRow(tr('Count:'), self.count)
         form.addRow(tr('Description:'), self.desc)
         form.addRow(dialog_buttons(self, self._ok))
-        chain = [self.model, nm, self.maker, self.capacity, self.type, self.id, self.count, self.desc]
+        chain = [self.model, self.em, nm, self.maker, self.capacity, self.type, self.id, self.count, self.desc]
         for w1, w2 in zip(chain, chain[1:]):  # Tab in the order shown (default: order of creation)
             QWidget.setTabOrder(w1, w2)
         for w in (self.maker, self.capacity, self.type):   # a click on them while disabled explains why
@@ -1523,6 +1527,7 @@ class BatteryDialog(QDialog):
         m = self.db.model(self._model_id()) if self._model_id() is not None else None
         for w in (self.maker, self.capacity, self.type):
             w.setEnabled(self.model.currentData() == self.CUSTOM)
+        self.em.setEnabled(m is not None)         # only a real model (not "choose" / special battery)
         if m:
             self.maker.setCurrentText(m['maker'])
             self.capacity.set_value(m['capacity'] or 0, tr('not set'))
@@ -1537,6 +1542,15 @@ class BatteryDialog(QDialog):
         dlg = ModelDialog(self, self.db, prefill=dict(type=self.type.currentText().strip(),
                                                       maker=self.maker.currentText().strip(),
                                                       capacity=self.capacity.value()))
+        if dlg.exec():
+            self.model_changes.append((dlg.result_id, dlg.batteries))
+            self.load_models(dlg.result_id)
+
+    def _edit_model(self):
+        mid = self._model_id()
+        if mid is None:
+            return
+        dlg = ModelDialog(self, self.db, model=self.db.model(mid))
         if dlg.exec():
             self.model_changes.append((dlg.result_id, dlg.batteries))
             self.load_models(dlg.result_id)
@@ -2043,7 +2057,12 @@ class BatteryTab(QWidget):
         super().__init__()
         self.db = db
         lay = QHBoxLayout(self)
-        left = QVBoxLayout()
+        self.split = QSplitter(Qt.Horizontal)          # batteries | history, position stored with the layout
+        self.split.setChildrenCollapsible(False)
+        lay.addWidget(self.split)
+        lw = QWidget()
+        left = QVBoxLayout(lw)
+        left.setContentsMargins(0, 0, 0, 0)
         btns = QHBoxLayout()
         for text, fn in [(tr('New battery …'), self.add), (tr('Edit …'), self.edit), (tr('Delete'), self.delete)]:
             b = QPushButton(text)
@@ -2069,8 +2088,10 @@ class BatteryTab(QWidget):
         self.table.cellDoubleClicked.connect(lambda *_: self.edit())
         row_menu(self.table, self.edit, self.delete)
         left.addWidget(self.table)
-        lay.addLayout(left, 3)
-        right = QVBoxLayout()
+        self.split.addWidget(lw)
+        rw = QWidget()
+        right = QVBoxLayout(rw)
+        right.setContentsMargins(0, 0, 0, 0)
         self.hist_title = QLabel()
         right.addWidget(self.hist_title)
         heads = session_headers()
@@ -2079,8 +2100,14 @@ class BatteryTab(QWidget):
         self.hist.cellDoubleClicked.connect(
             lambda r, _c: self.open_session.emit(self.hist.item(r, 0).data(Qt.UserRole)))
         right.addWidget(self.hist)
-        lay.addLayout(right, 2)
+        self.split.addWidget(rw)
+        self.split.setSizes([600, 400])
+        self.shown_once = False           # sizes() of a never shown splitter are meaningless: don't store them
         self.load()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.shown_once = True
 
     def selected(self):
         r = self.table.currentRow()
@@ -2124,6 +2151,17 @@ class BatteryTab(QWidget):
         self._filter()
         self.table.blockSignals(False)
         self.show_history()
+
+    def show_battery(self, bid):
+        """Select this battery (and show its history); clears search and filters if they hide it."""
+        for r in range(self.table.rowCount()):
+            if self.table.item(r, 0).data(Qt.UserRole) == bid:
+                if self.table.isRowHidden(r):
+                    self.search.clear()
+                    self.table.autofilter.clear()
+                self.table.selectRow(r)
+                self.table.scrollToItem(self.table.item(r, 0))
+                return
 
     def _matches(self, row):
         """Search field: every word in ID, maker, model, type, description or name."""
@@ -3023,6 +3061,11 @@ class MainWindow(QMainWindow):
     def _tile_clicked(self, key):
         self.row_sid = None
         self.select_slot(key)
+        s = self.cur.get(key) if self.live.get(key, {}).get('mode') else None
+        bid = self.db.battery_of(s['id']) if s and s['id'] else None
+        if bid is not None:                          # battery in the slot: show its history
+            self.tabs.setCurrentWidget(self.btab)
+            self.btab.show_battery(bid)
 
     def open_session(self, sid):
         d = self.db.session_dict(sid)
@@ -3129,6 +3172,8 @@ class MainWindow(QMainWindow):
         self.db.set_setting('window', f'{g.x()},{g.y()},{g.width()},{g.height()},{int(self.isMaximized())}')
         self.db.set_setting('split_v', ','.join(map(str, self.vsplit.sizes())))
         self.db.set_setting('split_h', ','.join(map(str, self.hsplit.sizes())))
+        if self.btab.shown_once:
+            self.db.set_setting('split_bat', ','.join(map(str, self.btab.split.sizes())))
 
     def restore_layout(self):
         """Back to the stored layout; a window that is not completely on one screen (monitor gone, moved off the
@@ -3146,7 +3191,8 @@ class MainWindow(QMainWindow):
             area = QGuiApplication.primaryScreen().availableGeometry()
             self.resize(min(1500, area.width() - 40), min(950, area.height() - 60))
             self.move(area.center() - self.rect().center())
-        for split, key in ((self.vsplit, 'split_v'), (self.hsplit, 'split_h')):
+        for split, key in ((self.vsplit, 'split_v'), (self.hsplit, 'split_h'),
+                           (self.btab.split, 'split_bat')):
             try:
                 sizes = [int(x) for x in (self.db.setting(key) or '').split(',')]
             except ValueError:

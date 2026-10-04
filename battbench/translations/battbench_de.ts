@@ -188,6 +188,10 @@
         <translation>Neuer Akku</translation>
     </message>
     <message>
+        <source>Edit the chosen model</source>
+        <translation>Gewähltes Modell bearbeiten</translation>
+    </message>
+    <message>
         <source>New …</source>
         <translation>Neu …</translation>
     </message>

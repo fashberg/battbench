@@ -79,7 +79,8 @@ but with a very high resistance (from 1000 mΩ NiMH / 400 mΩ Li-ion) is marked 
   empty, orange charging, pink discharging, blue analysis / activation / cycle, green done, red error. The “+” tab
   lists the supported chargers, the Bluetooth search and how to read the A4 Air.
 - **Slot tiles**: values of the slot; the bar shows the charger's progress, its arrows run towards 100 % while
-  charging and towards 0 % while discharging. Click a tile to see its session.
+  charging and towards 0 % while discharging. Click a tile to see its session; if a battery is assigned, the
+  *Batteries* tab below opens with its history.
 - **Chart**: point at a curve, legend entry or axis to highlight it; click a legend entry or axis to show or hide a
   value. Click a shaded phase (or a row in the phase list) to see only that phase. Drag to draw a frame and zoom to
   it; once zoomed in, dragging in the lower two thirds scrolls through time (the upper third still draws a frame).

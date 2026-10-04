@@ -81,7 +81,8 @@ Kapazitätsmessung, aber mit sehr hohem Widerstand (ab 1000 mΩ NiMH / 400 mΩ L
   grau leer, orange lädt, pink entlädt, blau Analyse/Aktivierung/Zyklus, grün fertig, rot Fehler. Der Reiter „+“
   zeigt die unterstützten Ladegeräte, die Bluetooth-Suche und wie der A4 Air gelesen wird.
 - **Schacht-Kacheln**: Werte des Schachts; der Balken zeigt den Fortschritt des Ladegeräts, seine Pfeile laufen beim
-  Laden Richtung 100 % und beim Entladen Richtung 0 %. Ein Klick zeigt den Vorgang des Schachts.
+  Laden Richtung 100 % und beim Entladen Richtung 0 %. Ein Klick zeigt den Vorgang des Schachts; ist ein Akku
+  zugeordnet, öffnet sich unten der Tab *Akkus* mit seinem Verlauf.
 - **Diagramm**: Maus auf eine Kurve, einen Legenden-Eintrag oder eine Achse hebt diesen Wert hervor; ein Klick auf
   Legende oder Achse blendet ihn aus oder ein. Ein Klick auf eine farbige Phase (oder eine Zeile der Phasenliste)
   zeigt nur diese Phase. Ziehen zieht einen Rahmen und zoomt darauf; ist hineingezoomt, scrollt Ziehen in den unteren
