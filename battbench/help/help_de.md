@@ -90,7 +90,9 @@ Kapazitätsmessung, aber mit sehr hohem Widerstand (ab 1000 mΩ NiMH / 400 mΩ L
 - **Tabellen** (unten): Klick auf einen Spaltentitel sortiert; der Trichter im Spaltentitel filtert wie in einer
   Tabellenkalkulation. *Vorgänge* listet alle Vorgänge, *Akkus* deine Akkus mit ihrem Verlauf rechts, *Modelle* die
   Modellliste, *Ladegeräte* die bekannten Ladegeräte (hier umbenennen – der Name wird nur in BattBench gespeichert).
-- **Löschen**: Rechtsklick auf Vorgänge, Akkus oder Modelle (Strg / Umschalt wählt mehrere). Gelöschte Einträge werden
+- **Tasten in den Tabellen**: Pfeiltasten bewegen, Enter bearbeitet einen Akku / ein Modell (bei *Vorgänge*: springt
+  ins Akku-Feld), Entf löscht.
+- **Löschen**: Rechtsklick (oder Entf) auf Vorgänge, Akkus oder Modelle (Strg / Umschalt wählt mehrere). Gelöschte Einträge werden
   nur ausgeblendet; in den *Einstellungen* lassen sie sich wieder anzeigen (grau) – erneutes Löschen entfernt sie
   endgültig.
 

@@ -22,8 +22,8 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import (QByteArray, QEvent, QLocale, QObject, QPointF, QRectF, QRegularExpression, QSettings,
                             QSize, QSortFilterProxyModel, Qt, QThread, QTimer, Signal)
-from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QPainter, QPen, QPixmap,
-                           QRegularExpressionValidator)
+from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap,
+                           QRegularExpressionValidator, QShortcut)
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter, QDialog,
                                QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
@@ -1890,10 +1890,13 @@ def selected_ids(table):
     return [table.item(r, 0).data(Qt.UserRole) for r in rows if not table.isRowHidden(r)]
 
 
-def row_menu(table, edit, delete):
+def row_menu(table, edit, delete, enter=None):
     """Right click on a row: Edit … (if edit is given) / Delete; with several rows selected (Ctrl / Shift) only
-    Delete."""
+    Delete. Keys: Enter = enter (default: edit, one row selected), Del = delete."""
     table.setContextMenuPolicy(Qt.CustomContextMenu)
+    enter = enter or (lambda: edit() if len(selected_ids(table)) == 1 else None)
+    for key, fn in ((Qt.Key_Return, enter), (Qt.Key_Enter, enter), (Qt.Key_Delete, delete)):
+        QShortcut(QKeySequence(key), table, fn, context=Qt.WidgetShortcut)
 
     def show(pos):
         row = table.rowAt(pos.y())
@@ -2703,7 +2706,7 @@ class MainWindow(QMainWindow):
         self.table = make_table([heads[c] for c in self.COLS], autofilter=True)
         self.table.sortByColumn(0, Qt.DescendingOrder)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)      # Ctrl / Shift: several, to delete
-        row_menu(self.table, None, self.delete_sessions)
+        row_menu(self.table, None, self.delete_sessions, enter=self.result.battery.setFocus)
         self.table.currentCellChanged.connect(self._row_changed)    # click or arrow keys
         self.table.cellClicked.connect(self._row_clicked)           # same row again (e.g. after a slot view)
         self.tabs.addTab(self.table, tr('Sessions'))
