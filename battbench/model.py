@@ -86,16 +86,22 @@ class Session:
     dirty: bool = True
 
     # ---------------------------------------------------------------- results
+    def _real_phases(self):
+        """Phases that count for the capacities: a phase of a single reading is a glitch (e.g. the probe pulse of a
+        slot when the cell is taken out), its mAh is just the counter of the phase before."""
+        return [p for p in self.phases if p.end > p.start]
+
     @property
     def discharge_mah(self) -> Optional[int]:
-        d = [p for p in self.phases if p.kind == DISCHARGE and p.mah > 0]
+        d = [p for p in self._real_phases() if p.kind == DISCHARGE and p.mah > 0]
         return d[-1].mah if d else None
 
     @property
     def charge_mah(self) -> Optional[int]:
         """Charge put in after the (last) discharge, or the only charge phase."""
-        last_d = max((i for i, p in enumerate(self.phases) if p.kind == DISCHARGE), default=-1)
-        c = [p for p in self.phases[last_d + 1:] if p.kind == CHARGE and p.mah > 0]
+        phases = self._real_phases()
+        last_d = max((i for i, p in enumerate(phases) if p.kind == DISCHARGE), default=-1)
+        c = [p for p in phases[last_d + 1:] if p.kind == CHARGE and p.mah > 0]
         return c[-1].mah if c else None
 
     def rating(self):
@@ -127,8 +133,8 @@ def measuring(status, kinds):
 
 def rate_values(dis, nominal, chg, res, status, still_measuring=False, chem=''):
     """Returns (grade, notes), notes = [(text, values)] (see note_text).
-    Capacity rule from the SkyRC manuals: < 60 % of nominal = worn out. A very poor internal resistance lowers a
-    (very) good capacity rating to fair."""
+    Capacity rule from the SkyRC manuals: < 60 % of nominal = worn out. The internal resistance caps the rating:
+    poor -> at most good, very poor -> at most fair."""
     notes = []
     grade = NO_GRADE
     level = res_level(res, chem) if res else None
@@ -149,6 +155,8 @@ def rate_values(dis, nominal, chg, res, status, still_measuring=False, chem=''):
         notes.append(res_note)
         if level == 4 and grade in GRADES[:2]:
             grade = GRADES[2]
+        elif level == 3 and grade == GRADES[0]:
+            grade = GRADES[1]
         if res >= RES_SUSPICIOUS[res_family(chem)] and grade == NO_GRADE:
             grade = GRADES[4]
     if status == RUNNING:
@@ -224,6 +232,8 @@ class Tracker:
         return task == cur.task and 0 < prev.secs <= s.secs
 
     def _close(self, cur: Session, status: str):
+        if len(cur.phases) > 1 and cur.phases[-1].end <= cur.phases[-1].start:
+            cur.phases.pop()                              # a last phase of a single reading is a glitch
         cur.status = status if cur.status != FINISHED else FINISHED
         cur.dirty = True
         self.closed.append(cur)

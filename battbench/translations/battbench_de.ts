@@ -384,6 +384,18 @@
         <translation>Kein Vorgang in diesem Slot</translation>
     </message>
     <message>
+        <source>{} % capacity</source>
+        <translation>{} % Kapazität</translation>
+    </message>
+    <message>
+        <source>resistance: {}</source>
+        <translation>Widerstand: {}</translation>
+    </message>
+    <message>
+        <source>Charging only, no analysis</source>
+        <translation>Nur geladen, keine Analyse</translation>
+    </message>
+    <message>
         <source>Set the nominal capacity for a rating</source>
         <translation>Setze Nennkapazität für Bewertung</translation>
     </message>

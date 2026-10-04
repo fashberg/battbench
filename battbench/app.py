@@ -1593,6 +1593,7 @@ class ResultPanel(QWidget):
         self.shown = (None, 0)            # battery id / nominal last filled into the edit fields
         self.picked = {}                  # session id -> model chosen there without a battery (not stored)
         self.dev_name = lambda dev: ''    # set by the main window
+        self.busy = lambda: set()         # set by the main window: ids of batteries in a slot right now
         lay = QVBoxLayout(self)
         self.title = QLabel(tr('No session selected'))
         f = QFont()
@@ -1695,8 +1696,9 @@ class ResultPanel(QWidget):
         self.battery.blockSignals(True)
         self.battery.clear()
         self.battery.addItem(tr('– no battery assigned –'), None)
+        busy = self.busy() - {keep}       # a battery in another slot can't be this one
         for r in self.db.batteries():
-            if mid is not None and r[9] != mid:
+            if mid is not None and r[9] != mid or r[0] in busy:
                 continue
             extra = ', '.join(x for x in (r[2], f'{r[3]} mAh' if r[3] else '', r[4]) if x)
             self.battery.addItem(f'#{r[0]} {r[1]}' + (f'  ({extra})' if extra else ''), r[0])
@@ -1822,9 +1824,18 @@ class ResultPanel(QWidget):
         g = d['grade'] or NO_GRADE
         nominal = d['nominal'] or NOMINAL.get(d['size'], 0)
         unrated = g == NO_GRADE and not nominal
-        pct = f" ({100 * d['discharge_mah'] / nominal:.0f} %)" if d['discharge_mah'] and nominal and g != NO_GRADE else ''
-        if is_measuring(d):                   # capacity not final yet: e.g. "Analyse läuft" in grey
-            g = NO_GRADE
+        pct = ''
+        if d['discharge_mah'] and nominal and g != NO_GRADE:     # e.g. "good (92 % capacity, resistance: poor)"
+            parts = [tr('{} % capacity').format(round(100 * d['discharge_mah'] / nominal))]
+            level = res_level(d['res_min'], d['chem']) if d['res_min'] else 0
+            if level >= 3:                    # poor / very poor: it lowered the rating
+                parts.append(tr('resistance: {}').format(tr_data(RES_QUALITY[level])))
+            pct = ' (' + ', '.join(parts) + ')'
+        if d['task'] == CHARGE and not d['discharge_mah']:       # a plain charge measures no capacity
+            g, unrated = NO_GRADE, False
+            self.grade.setText(tr('Charging only, no analysis'))
+        elif is_measuring(d) or d['status'] == RUNNING and g == NO_GRADE:
+            g, unrated = NO_GRADE, False      # capacity not final yet: e.g. "Analyse läuft" in grey
             self.grade.setText(tr_data(d['task']) + ' ' + tr_data(RUNNING))
         else:
             self.grade.setText(tr('Set the nominal capacity for a rating') if unrated else tr_data(g) + pct)
@@ -2810,6 +2821,7 @@ class MainWindow(QMainWindow):
         hsplit.addWidget(self.plot)
         self.result = ResultPanel(self.db)
         self.result.dev_name = self.dev_name
+        self.result.busy = self.busy_batteries
         self.result.save.connect(self.save_meta)
         self.result.new_battery.connect(self.new_battery_for_session)
         self.result.phase_clicked.connect(self.plot.show_phase)          # phase list and chart stay in step
@@ -3006,6 +3018,19 @@ class MainWindow(QMainWindow):
             self.result.show_session(s, self.db.battery_of(s['id']) if s and s['id'] else None)
             if time.time() - self.last_plot > 5:     # curves are re-read from the DB, so not every second
                 self.refresh_plot(keep_view=True)
+
+    def busy_batteries(self):
+        """Ids of the batteries assigned to the sessions of occupied slots (they are in a charger right now). Only for
+        the live view of a slot: a past session may be given any battery."""
+        out = set()
+        if self.hist_id is not None:
+            return out
+        for key, s in self.cur.items():
+            if s and s['id'] and self.live.get(key, {}).get('mode'):
+                bid = self.db.battery_of(s['id'])
+                if bid is not None:
+                    out.add(bid)
+        return out
 
     # ---------------------------------------------------------------- selection
     def _mark(self, key):

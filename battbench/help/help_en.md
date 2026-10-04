@@ -81,7 +81,8 @@ The internal resistance is rated as well:
 | poor | below 600 mΩ | below 200 mΩ |
 | very poor | from 600 mΩ | from 200 mΩ |
 
-A very poor internal resistance lowers a (very) good capacity rating to *fair*. A cell without a capacity measurement
+The internal resistance caps the rating: with a *poor* one a cell is at most *good*, with a *very poor* one at most
+*fair* – such a cell delivers its capacity at moderate currents but its voltage drops under higher load. A cell without a capacity measurement
 but with a very high resistance (from 1000 mΩ NiMH / 400 mΩ Li-ion) is marked *suspicious*.
 
 ### Using the app

@@ -319,6 +319,8 @@ class A4Air(Charger):
             mode, mode_str = (3, 'charging') if charging else (4, 'charged')
             size, mah, secs = 'AA/AAA', int(st['mah']), int(now - st['start'])
             res = int(statistics.median(st['ir'])) if len(st['ir']) >= 3 else 0
+            if h[-1] and ma < 0:            # probe pulse of a slot just emptied (not debounced yet): no discharge
+                ma = 0
         return Sample(t=now, slot=slot, mode=mode, mode_str=mode_str, chem='', size=size, mv=mv, ma=ma,
                       res=res, mah=mah, secs=secs, temp=temp, itemp=0, progress=0, power=0, energy=0,
                       raw=p.hex())

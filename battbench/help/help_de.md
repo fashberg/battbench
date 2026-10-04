@@ -83,7 +83,9 @@ Auch der Innenwiderstand wird bewertet:
 | schlecht | unter 600 mΩ | unter 200 mΩ |
 | sehr schlecht | ab 600 mΩ | ab 200 mΩ |
 
-Ein sehr schlechter Innenwiderstand stuft eine (sehr) gute Kapazität auf *mäßig* herab. Ein Akku ohne
+Der Innenwiderstand begrenzt die Bewertung: Mit einem *schlechten* ist ein Akku höchstens *gut*, mit einem *sehr
+schlechten* höchstens *mäßig* – so ein Akku liefert seine Kapazität bei mäßigem Strom, unter höherer Last bricht
+die Spannung aber ein. Ein Akku ohne
 Kapazitätsmessung, aber mit sehr hohem Widerstand (ab 1000 mΩ NiMH / 400 mΩ Li-Ion) gilt als *verdächtig*.
 
 ### Bedienung

@@ -220,6 +220,9 @@ class DB:
         if self.con.execute('PRAGMA user_version').fetchone()[0] < 8:
             self.thin_samples()
             self.con.execute('PRAGMA user_version = 8')
+        if self.con.execute('PRAGMA user_version').fetchone()[0] < 10:
+            self._rerate_all()
+            self.con.execute('PRAGMA user_version = 10')
         if not self.con.execute('SELECT COUNT(*) FROM models').fetchone()[0]:
             self.con.executemany('INSERT INTO models (maker,name,type,capacity) VALUES (?,?,?,?)', DEFAULT_MODELS)
         self.con.commit()
@@ -462,8 +465,20 @@ class DB:
             self.con.execute('UPDATE sessions SET nominal=? WHERE id=?', (nominal, session_id))
         self.con.commit()
 
+    def _rerate_all(self):
+        """Version 10: a poor internal resistance caps the rating at good, and a last phase of a single reading (probe
+        pulse when a cell is taken out of an A4 Air) is dropped - it took the charge counter as a discharge capacity.
+        (9 was an unreleased first version of this.)"""
+        for sid, idx in self.con.execute(
+                'SELECT p.session_id, p.idx FROM phases p JOIN sessions s ON s.id = p.session_id '
+                'WHERE s.status != ? AND p.end <= p.start AND p.idx > 0 '
+                'AND p.idx = (SELECT MAX(idx) FROM phases WHERE session_id = p.session_id)', (RUNNING,)).fetchall():
+            self.con.execute('DELETE FROM phases WHERE session_id=? AND idx=?', (sid, idx))
+        for (sid,) in self.con.execute('SELECT id FROM sessions').fetchall():
+            self.rerate(sid, commit=False)
+
     def rerate(self, session_id, commit=True):
-        """Recompute grade after the nominal capacity was changed."""
+        """Recompute capacities and grade (e.g. after the nominal capacity was changed)."""
         row = self.con.execute('SELECT slot,start,end,task,chem,size,status,nominal,res_first,res_min,'
                                'res_last,temp_max FROM sessions WHERE id=?', (session_id,)).fetchone()
         s = Session(slot=row[0], start=row[1], end=row[2], task=row[3], chem=row[4], size=row[5],
@@ -471,7 +486,8 @@ class DB:
                     temp_max=row[11], db_id=session_id)
         s.phases = [Phase(kind=k, start=a, end=b, mah=m) for k, a, b, m in self.phases(session_id)]
         grade, note = s.rating()
-        self.con.execute('UPDATE sessions SET grade=?, note=? WHERE id=?', (grade, note, session_id))
+        self.con.execute('UPDATE sessions SET grade=?, note=?, discharge_mah=?, charge_mah=? WHERE id=?',
+                         (grade, note, s.discharge_mah, s.charge_mah, session_id))
         if commit:
             self.con.commit()
 
