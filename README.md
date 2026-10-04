@@ -22,14 +22,15 @@ The user interface is available in **English** and **German**. The user guide be
 
 ## Installation
 ### Windows
-Download `BattBench-<version>-setup.exe` from the releases and run it. It installs for the current user (no
+Download `BattBench-<version>-setup.exe` from the [releases](https://github.com/fashberg/battbench/releases) and run
+it. It installs for the current user (no
 administrator rights needed), adds BattBench to the Start menu and, if you like, to the desktop. Uninstalling asks
 whether to keep your measurements.
 
 ### From source (Windows, Linux, macOS)
 Requires Python 3.10 or newer.
 ```
-git clone https://git.ashberg.de/folke/battbench.git
+git clone https://github.com/fashberg/battbench.git
 cd battbench
 run.bat          (Windows)
 ./run.sh         (Linux / macOS)
@@ -190,7 +191,8 @@ read from each charger.
   tags `v<version>`, builds the installer and offers to push. `--dry-run` only shows what it would do.
 
 ## Credits
-- USB protocol library: [isdttool](https://github.com/maxried/isdttool) (patched fork used here).
+- USB protocol library: [isdttool](https://github.com/maxried/isdttool), used as a patched fork:
+  [fashberg/isdttool](https://github.com/fashberg/isdttool).
 - ISDT Air Bluetooth protocol: [isdt_air_ble](https://github.com/mtheli/isdt_air_ble),
   [ISDT-Charge-Utility](https://github.com/DittelHome/ISDT-Charge-Utility).
 - SkyRC Bluetooth protocol: [skyrc-mc3000](https://github.com/kolinger/skyrc-mc3000),
@@ -200,4 +202,5 @@ BattBench is not affiliated with ISDT or SkyRC. Chargers and batteries can be da
 unattended. This software comes without any warranty.
 
 ## Author and license
-Folke Ashberg, [www.ashberg.de](https://www.ashberg.de). GPLv3, see [LICENSE](LICENSE).
+Folke Ashberg, [www.ashberg.de](https://www.ashberg.de) · [github.com/fashberg/battbench](https://github.com/fashberg/battbench).
+GPLv3, see [LICENSE](LICENSE).

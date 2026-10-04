@@ -10,7 +10,7 @@ from . import __version__
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AUTHOR = 'Folke Ashberg'
 WEBSITE = 'https://www.ashberg.de'
-SOURCE = 'https://git.ashberg.de/folke/battbench'
+SOURCE = 'https://github.com/fashberg/battbench'
 
 
 def _git(*args):

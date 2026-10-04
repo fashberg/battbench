@@ -94,6 +94,7 @@ Section "!$(SecApp)" SEC_APP
   WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "Folke Ashberg"
   WriteRegStr HKCU "${UNINST_KEY}" "URLInfoAbout" "https://www.ashberg.de"
+  WriteRegStr HKCU "${UNINST_KEY}" "URLUpdateInfo" "https://github.com/fashberg/battbench/releases"
   WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\${EXE}"
   WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
