@@ -2,10 +2,10 @@
 
 **Battery test bench for your PC: track every rechargeable cell over its whole life and see how it ages.**
 
-[![BattBench: live view of two chargers, chart of a running capacity test, rating and battery list](docs/screenshot.png)](docs/screenshot.png)
+[![BattBench: live view of two chargers, chart of a capacity test, health index and battery history](docs/screenshot.png)](docs/screenshot.png)
 
-*Two chargers with twelve slots live, the chart of a running capacity test, its rating and the list of batteries with
-their latest results.*
+*Two chargers with twelve slots live, each slot with its battery and rating; the chart of a capacity test with the
+plateau of the discharge marked, its health index and the history of the battery.*
 
 BattBench reads ISDT and SkyRC chargers over **USB** and **Bluetooth**, records their readings, detects charge and
 discharge runs, rates each battery against its nominal capacity and keeps a **history per battery**. Several chargers
