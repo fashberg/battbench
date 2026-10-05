@@ -32,6 +32,22 @@
         <translation>%d.%m.%Y</translation>
     </message>
     <message>
+        <source>high</source>
+        <translation>hoch</translation>
+    </message>
+    <message>
+        <source>medium</source>
+        <translation>mittel</translation>
+    </message>
+    <message>
+        <source>low</source>
+        <translation>gering</translation>
+    </message>
+    <message>
+        <source>recycle</source>
+        <translation>Recycling</translation>
+    </message>
+    <message>
         <source>Loading database …</source>
         <translation>Lade Datenbank …</translation>
     </message>
@@ -62,6 +78,14 @@
     <message>
         <source>no charger connected</source>
         <translation>kein Ladegerät verbunden</translation>
+    </message>
+    <message>
+        <source>Backup saved: {}</source>
+        <translation>Sicherung gespeichert: {}</translation>
+    </message>
+    <message>
+        <source>Backup failed: {}</source>
+        <translation>Sicherung fehlgeschlagen: {}</translation>
     </message>
     <message>
         <source>Compressing readings … {} %</source>
@@ -118,6 +142,14 @@
     <message>
         <source>phase: {} (click: whole run)</source>
         <translation>Phase: {} (Klick: ganzer Vorgang)</translation>
+    </message>
+    <message>
+        <source>20–80 %: Ø {} V</source>
+        <translation>20–80 %: Ø {} V</translation>
+    </message>
+    <message>
+        <source>5 %: {} V</source>
+        <translation>5 %: {} V</translation>
     </message>
     <message>
         <source>%b %d, %H:%M:%S</source>
@@ -260,12 +292,28 @@
         <translation>Zeit</translation>
     </message>
     <message>
+        <source>Health index</source>
+        <translation>Gesundheitsindex</translation>
+    </message>
+    <message>
+        <source>Suited for</source>
+        <translation>Geeignet für</translation>
+    </message>
+    <message>
         <source>Discharge capacity</source>
         <translation>Entladekapazität</translation>
     </message>
     <message>
         <source>Charge capacity</source>
         <translation>Ladekapazität</translation>
+    </message>
+    <message>
+        <source>Charge efficiency</source>
+        <translation>Ladeeffizienz</translation>
+    </message>
+    <message>
+        <source>Voltage under load</source>
+        <translation>Spannung unter Last</translation>
     </message>
     <message>
         <source>Max. temperature</source>
@@ -360,6 +408,22 @@
         <translation>&lt;p&gt;Der Innenwiderstand, wie ihn das Ladegerät misst – &lt;b&gt;niedriger ist besser&lt;/b&gt;. Er steigt mit Alter und Verschleiß; ein hoher Wert lässt die Spannung unter Last einbrechen, das Gerät schaltet früher ab. „min.“ ist der kleinste Wert des Vorgangs, erster und letzter die Werte an Anfang und Ende.&lt;/p&gt;</translation>
     </message>
     <message>
+        <source>&lt;p&gt;Health index 0–100 from four scores, each 0–100: capacity (weight 40 %), internal resistance (30 %), voltage under load (20 %) and charge efficiency (10 %). A score that cannot be worked out is left out and the others weighted up. The index gives the category A–D; the user guide (Help) explains the calculation.&lt;/p&gt;</source>
+        <translation>&lt;p&gt;Gesundheitsindex 0–100 aus vier Teilnoten von je 0–100: Kapazität (Gewicht 40 %), Innenwiderstand (30 %), Spannung unter Last (20 %) und Ladeeffizienz (10 %). Eine Teilnote, die sich nicht bestimmen lässt, fällt weg, die anderen zählen dann entsprechend mehr. Aus dem Index folgt die Kategorie A–D; die Anleitung (Hilfe) erklärt die Rechnung.&lt;/p&gt;</translation>
+    </message>
+    <message>
+        <source>&lt;p&gt;What the cell is still good for, from its category: A high drain (flash units, RC models), B medium drain (LED torches, mice), C low drain (remote controls, clocks), D recycle.&lt;/p&gt;</source>
+        <translation>&lt;p&gt;Wofür der Akku noch taugt, nach seiner Kategorie: A hohe Last (Blitzgeräte, RC-Modelle), B mittlere Last (LED-Taschenlampen, Mäuse), C geringe Last (Fernbedienungen, Uhren), D Recycling.&lt;/p&gt;</translation>
+    </message>
+    <message>
+        <source>&lt;p&gt;Discharge capacity ÷ the charge put in after it. 75–85 % is normal for NiMH; less means losses (heat, self-discharge), more a charge that may have ended early. It counts once the charge after the discharge is finished.&lt;/p&gt;</source>
+        <translation>&lt;p&gt;Entladekapazität ÷ die danach eingeladene Ladung. 75–85 % sind für NiMH normal; weniger heißt Verluste (Wärme, Selbstentladung), mehr eine möglicherweise zu früh beendete Ladung. Sie zählt, sobald die Ladung nach der Entladung fertig ist.&lt;/p&gt;</translation>
+    </message>
+    <message>
+        <source>&lt;p&gt;The voltage while discharging: after 5 % of the discharge, and the average from 20 to 80 % (the plateau, shaded darker in the chart). A healthy NiMH cell stays above 1.15 V and 1.20 V at a discharge current of about 0.2 C; falling below 1.0 V before 80 % is an early drop.&lt;/p&gt;</source>
+        <translation>&lt;p&gt;Die Spannung beim Entladen: nach 5 % der Entladung und der Mittelwert von 20 bis 80 % (das Plateau, im Diagramm dunkler hinterlegt). Ein gesunder NiMH-Akku bleibt bei etwa 0,2 C Entladestrom über 1,15 V bzw. 1,20 V; fällt er vor 80 % unter 1,0 V, bricht er zu früh ein.&lt;/p&gt;</translation>
+    </message>
+    <message>
         <source>&lt;p&gt;The highest temperature of the battery during the session. NiMH cells get warm towards the end of charging, which is normal. Above about 45 °C the cell is stressed: check the contacts and the charging current.&lt;/p&gt;</source>
         <translation>&lt;p&gt;Die höchste Temperatur des Akkus während des Vorgangs. NiMH-Akkus werden gegen Ende des Ladens warm, das ist normal. Ab etwa 45 °C wird der Akku belastet: Kontakte und Ladestrom prüfen.&lt;/p&gt;</translation>
     </message>
@@ -382,14 +446,6 @@
     <message>
         <source>No session in this slot</source>
         <translation>Kein Vorgang in diesem Slot</translation>
-    </message>
-    <message>
-        <source>{} % capacity</source>
-        <translation>{} % Kapazität</translation>
-    </message>
-    <message>
-        <source>resistance: {}</source>
-        <translation>Widerstand: {}</translation>
     </message>
     <message>
         <source>Charging only, no analysis</source>
@@ -468,6 +524,66 @@
         <translation>Jetzt alle Messwerte komprimieren …</translation>
     </message>
     <message>
+        <source>Every</source>
+        <translation>Alle</translation>
+    </message>
+    <message>
+        <source>h (and on exit; 0 = only on exit)</source>
+        <translation>h (und beim Beenden; 0 = nur beim Beenden)</translation>
+    </message>
+    <message>
+        <source>Keep the last</source>
+        <translation>Behalten: die letzten</translation>
+    </message>
+    <message>
+        <source>backups</source>
+        <translation>Sicherungen</translation>
+    </message>
+    <message>
+        <source>plus the last</source>
+        <translation>dazu die letzten</translation>
+    </message>
+    <message>
+        <source>daily</source>
+        <translation>täglichen</translation>
+    </message>
+    <message>
+        <source>weekly</source>
+        <translation>wöchentlichen</translation>
+    </message>
+    <message>
+        <source>monthly backups</source>
+        <translation>monatlichen Sicherungen</translation>
+    </message>
+    <message>
+        <source>A backup is saved when BattBench is closed and, while it runs, every so many hours.</source>
+        <translation>Eine Sicherung entsteht beim Beenden von BattBench und, solange es läuft, alle so viele Stunden.</translation>
+    </message>
+    <message>
+        <source>The newest backups, whatever their age.</source>
+        <translation>Die neuesten Sicherungen, egal wie alt.</translation>
+    </message>
+    <message>
+        <source>The newest backup of each of the last days that have one.</source>
+        <translation>Die neueste Sicherung von jedem der letzten Tage, an denen es eine gibt.</translation>
+    </message>
+    <message>
+        <source>The newest backup of each of the last weeks that have one.</source>
+        <translation>Die neueste Sicherung von jeder der letzten Wochen, in denen es eine gibt.</translation>
+    </message>
+    <message>
+        <source>The newest backup of each of the last months that have one.</source>
+        <translation>Die neueste Sicherung von jedem der letzten Monate, in denen es eine gibt.</translation>
+    </message>
+    <message>
+        <source>Backups:</source>
+        <translation>Sicherungen:</translation>
+    </message>
+    <message>
+        <source>Saved next to the database as {}</source>
+        <translation>Liegen neben der Datenbank als {}</translation>
+    </message>
+    <message>
         <source>(compressed: {})</source>
         <translation>(davon komprimiert: {})</translation>
     </message>
@@ -522,6 +638,54 @@
     <message>
         <source>Edit …</source>
         <translation>Bearbeiten …</translation>
+    </message>
+    <message>
+        <source>index {}</source>
+        <translation>Index {}</translation>
+    </message>
+    <message>
+        <source>Capa {} %</source>
+        <translation>Kapa {} %</translation>
+    </message>
+    <message>
+        <source>capacity</source>
+        <translation>Kapazität</translation>
+    </message>
+    <message>
+        <source>resistance</source>
+        <translation>Widerstand</translation>
+    </message>
+    <message>
+        <source>voltage</source>
+        <translation>Spannung</translation>
+    </message>
+    <message>
+        <source>efficiency</source>
+        <translation>Effizienz</translation>
+    </message>
+    <message>
+        <source>{} of 100</source>
+        <translation>{} von 100</translation>
+    </message>
+    <message>
+        <source>when the charge is finished</source>
+        <translation>sobald die Ladung fertig ist</translation>
+    </message>
+    <message>
+        <source>{} V after 5 %</source>
+        <translation>{} V nach 5 %</translation>
+    </message>
+    <message>
+        <source>{} V on average 20–80 %</source>
+        <translation>Ø {} V von 20–80 %</translation>
+    </message>
+    <message>
+        <source>below 1.0 V before 80 %</source>
+        <translation>unter 1,0 V vor 80 %</translation>
+    </message>
+    <message>
+        <source>estimated, not rated</source>
+        <translation>geschätzt, nicht bewertet</translation>
     </message>
     <message>
         <source>Delete</source>
@@ -1083,20 +1247,64 @@
         <translation>abgebrochen</translation>
     </message>
     <message>
+        <source>A · high drain</source>
+        <translation>A · hohe Last</translation>
+    </message>
+    <message>
+        <source>B · medium drain</source>
+        <translation>B · mittlere Last</translation>
+    </message>
+    <message>
+        <source>C · low drain</source>
+        <translation>C · geringe Last</translation>
+    </message>
+    <message>
+        <source>D · recycle</source>
+        <translation>D · Recycling</translation>
+    </message>
+    <message>
+        <source>flash units, RC models, motorised toys</source>
+        <translation>Blitzgeräte, RC-Modelle, motorisiertes Spielzeug</translation>
+    </message>
+    <message>
+        <source>LED torches, computer mice, bicycle lights</source>
+        <translation>LED-Taschenlampen, Computermäuse, Fahrradlichter</translation>
+    </message>
+    <message>
+        <source>remote controls, wall clocks, solar lights</source>
+        <translation>Fernbedienungen, Wanduhren, Solarleuchten</translation>
+    </message>
+    <message>
+        <source>no longer usable: high self-discharge or risk of failure</source>
+        <translation>nicht mehr verwendbar: hohe Selbstentladung oder Ausfallrisiko</translation>
+    </message>
+    <message>
+        <source>internal resistance only estimated (A4 Air over USB), not rated</source>
+        <translation>Innenwiderstand nur geschätzt (A4 Air über USB), nicht bewertet</translation>
+    </message>
+    <message>
+        <source>under load {v_start} V after 5 %, {v_mid} V on average from 20 to 80 %</source>
+        <translation>unter Last {v_start} V nach 5 %, im Mittel {v_mid} V von 20 bis 80 %</translation>
+    </message>
+    <message>
+        <source>below 1.0 V before 80 % of the discharge</source>
+        <translation>unter 1,0 V vor 80 % der Entladung</translation>
+    </message>
+    <message>
+        <source>health index {ohi} of 100</source>
+        <translation>Gesundheitsindex {ohi} von 100</translation>
+    </message>
+    <message>
+        <source>for: {use}</source>
+        <translation>für: {use}</translation>
+    </message>
+    <message>
         <source>very good</source>
         <translation>sehr gut</translation>
     </message>
     <message>
         <source>good</source>
         <translation>gut</translation>
-    </message>
-    <message>
-        <source>fair</source>
-        <translation>mäßig</translation>
-    </message>
-    <message>
-        <source>worn out</source>
-        <translation>verbraucht</translation>
     </message>
     <message>
         <source>suspicious</source>

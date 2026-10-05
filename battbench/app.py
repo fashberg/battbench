@@ -29,22 +29,24 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
                                QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
                                QProgressDialog,
                                QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
-                               QProxyStyle, QPushButton, QSizePolicy, QSpinBox, QStackedWidget, QSplitter, QStyle,
+                               QProxyStyle, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStackedWidget, QSplitter,
+                               QStyle,
                                QStyledItemDelegate, QStyleFactory, QStyleOptionViewItem, QTabWidget, QTableWidget,
                                QTableWidgetItem, QTextBrowser, QToolButton, QVBoxLayout, QWidget)
 
 from . import __version__
 from .version import AUTHOR, SOURCE, WEBSITE, full_version
 from .autofilter import FILTER_ROLE, SEARCH_ROLE, SORT_ROLE, AutoFilter, SortItem
-from .db import COMPRESS_AFTER, DB, SESSION_FIELDS, SampleThinner, close_and_backup
+from .db import (BACKUP_DEFAULTS, COMPRESS_AFTER, DB, SESSION_FIELDS, SampleThinner, close_and_backup, prune_backups,
+                 write_backup)
 from .device import UsbInfo, open_charger, usb_devices
 from .device_ble import BleManager
 from . import i18n
 from .i18n import LANGUAGES, install, pick_language, tr, tr_data
 from .model import DONE as DONE_MODES
-from .model import (ABORTED, CHARGE, DISCHARGE, FINISHED, GAP_SECS, GRADES, MODE_NAMES, NO_GRADE, NOMINAL,
-                    PHASE_MIN_MA, REMOVED, RES_QUALITY, RUNNING, TASKS, Session, Tracker, measuring, note_text,
-                    rate_values, res_level)
+from .model import (ABORTED, CATEGORIES, CHARGE, DISCHARGE, FINISHED, GAP_SECS, GRADES, MODE_NAMES, NO_GRADE, NOMINAL,
+                    PHASE_MIN_MA, REMOVED, RES_QUALITY, RUNNING, TASKS, USES, Session, Tracker, discharge_curve,
+                    health, measuring, note_text, rate_values, res_level)
 
 PKG = os.path.dirname(os.path.abspath(__file__))
 ICON = os.path.join(PKG, 'resources', 'battbench.svg')
@@ -166,16 +168,38 @@ def note_of(d):
     """Rating note of a session dict (live or from the DB) in the UI language."""
     nominal = d['nominal'] or NOMINAL.get(d['size'], 0)
     return note_text(rate_values(d['discharge_mah'], nominal, d['charge_mah'], d['res_min'], d['status'],
-                                 is_measuring(d), d['chem'])[1], tr_data)
+                                 is_measuring(d), d['chem'], d.get('v_start'), d.get('v_mid'), d.get('early_drop'),
+                                 d.get('res_est'))[1], tr_data)
+
+
+def grade_cell(grade, ohi):
+    """Rating in a table: (text, sort key, filter value), e.g. ("98 · A · high", 98, "A · high drain"). Sorted by
+    the health index; suspicious below the rated ones, no rating empty."""
+    short = dict(zip(CATEGORIES, (tr('high'), tr('medium'), tr('low'), tr('recycle'))))
+    text = tr_data(grade or NO_GRADE)
+    if grade in short and ohi is not None:
+        return f'{ohi} · {grade[0]} · {short[grade]}', ohi, text
+    return text, (-1 if grade == GRADES[4] else None), text
+
+
+def health_of(d):
+    """Health index of a session dict (model.health), None while measuring or without capacities."""
+    if is_measuring(d):
+        return None
+    return health(d['discharge_mah'], d['nominal'] or NOMINAL.get(d['size'], 0),
+                  d['charge_mah'] if d['status'] == FINISHED else None,
+                  None if d.get('res_est') else d['res_min'], d['chem'], d.get('v_start'), d.get('v_mid'),
+                  d.get('early_drop'))
 
 
 def session_info(s: Session):
     """Plain dict of a live session, safe to send to the GUI thread."""
-    grade, note = s.rating()
+    grade, note, ohi = s.rating()
     return dict(id=s.db_id, dev=s.dev, slot=s.slot, start=s.start, end=s.end, task=s.task, chem=s.chem, size=s.size,
                 status=s.status, nominal=s.nominal or NOMINAL.get(s.size, 0), discharge_mah=s.discharge_mah,
                 charge_mah=s.charge_mah, res_first=s.res_first, res_min=s.res_min, res_last=s.res_last,
-                temp_max=s.temp_max, grade=grade, note=note,
+                temp_max=s.temp_max, grade=grade, note=note, ohi=ohi, v_start=s.v_start, v_mid=s.v_mid,
+                early_drop=s.early_drop, res_est=s.res_est,
                 phases=[(p.kind, p.start, p.end, p.mah) for p in s.phases])
 
 
@@ -263,15 +287,20 @@ class Worker(QObject):
         self.tracker = Tracker()
         self.status.emit(tr('Loading database …'))
         self.db.resume(self.tracker)
+        if self.db.rate_missing():                # e.g. analysed before the health index existed
+            self.sessions_changed.emit()
         self.latest = dict(self.tracker.last)
         self.sessions_changed.emit()
         self._emit()
         self.next_compress = 0
+        self.last_backup = time.time()            # the app makes one on exit; the next one after the interval
+        self.next_backup_check = 0
         if self.source == 'offline':
             self.status.emit(tr('No chargers (database only)'))
             while self.running:
                 self._commands()
                 self._auto_compress()
+                self._auto_backup()
                 time.sleep(0.2)
         else:
             self._run()
@@ -288,6 +317,7 @@ class Worker(QObject):
         while self.running:
             self._commands()
             self._auto_compress()
+            self._auto_backup()
             now = time.time()
             if now >= nxt_scan:
                 nxt_scan = now + 3
@@ -464,6 +494,26 @@ class Worker(QObject):
         self.cycle.emit(dict(live=live, sessions=cur, devices={k: dict(v) for k, v in self.online.items()},
                              merged=self.merged))
         self.merged = []
+
+    def _auto_backup(self):
+        """Setting 'backup_hours': a backup every so many hours while running (checked once a minute)."""
+        now = time.time()
+        if now < self.next_backup_check:
+            return
+        self.next_backup_check = now + 60
+        policy = backup_policy()
+        if policy['hours'] > 0 and now - self.last_backup >= policy['hours'] * 3600:
+            self.last_backup = now
+            threading.Thread(target=self._backup, args=(policy,), name='backup').start()
+
+    def _backup(self, policy):
+        """In its own thread with its own connection: copying and packing a large database takes a while."""
+        try:
+            target = write_backup(self.db_path)
+            prune_backups(self.db_path, policy['keep'], policy['daily'], policy['weekly'], policy['monthly'])
+            self.status.emit(tr('Backup saved: {}').format(os.path.basename(target)))
+        except (OSError, sqlite3.Error) as e:
+            self.status.emit(tr('Backup failed: {}').format(repr(e)))
 
     def _auto_compress(self):
         """Setting 'compress': readings older than two weeks down to one per minute, at start and once a day."""
@@ -646,11 +696,12 @@ class SlotTile(QFrame):
         self.set_selected(False)
         self.set_color(COLORS['empty'])
 
-    def set_battery(self, bid):
-        """Title: slot number, plus the ID of the battery assigned to the session in the slot."""
+    def set_battery(self, bid, rating=''):
+        """Title: slot number, plus the ID of the battery assigned to the session in the slot and its rating
+        (as in the tables, e.g. "Slot 4 – #5 · 78 · B · medium")."""
         slot = self.key[1] + 1
         text = f'{slot}' if self.compact else tr('Slot {}').format(slot)
-        self.head.setText(text + (f' – #{bid}' if bid is not None else ''))
+        self.head.setText(text + (f' – #{bid}' if bid is not None else '') + (f' · {rating}' if rating else ''))
 
     def set_color(self, color):
         self.color = color
@@ -897,6 +948,7 @@ class CurvePlot(pg.GraphicsLayoutWidget):
         self.scene().sigMouseMoved.connect(self._mouse)
         self.scene().sigMouseClicked.connect(self._clicked)
         self.phase_sel = None                 # start time of the phase shown alone (click on a shaded phase)
+        self.show_curve = False               # mark the voltage curve of the last discharge (not while measuring)
         self.session_start = None
         self._raw = ([], [], '')
         self.reset_btn = QToolButton(self)    # bottom left, below the voltage axis; only while zoomed / hidden
@@ -1055,6 +1107,8 @@ class CurvePlot(pg.GraphicsLayoutWidget):
             r.setZValue(-10)
             self.vb.addItem(r, ignoreBounds=True)
             self.regions.append(r)
+        if self.show_curve:
+            self._curve_marks(*self._raw[:2])
         self.title_label.setText(title, color='#222', size='11pt')
         if self.data is not None:
             self._last_x = self.data[0][-1]
@@ -1076,6 +1130,32 @@ class CurvePlot(pg.GraphicsLayoutWidget):
         self._align_zero()
 
     _last_x = 0
+
+    def _curve_marks(self, rows, phases):
+        """Last discharge of the session: its plateau (20-80 %) shaded darker, the average voltage there as a dashed
+        line, the voltage after 5 % as a point - the values of the voltage score (model.discharge_curve)."""
+        dis = [ph for ph in phases if ph[0] == DISCHARGE]
+        if not dis:
+            return
+        _kind, a, b, _mah = dis[-1]
+        c = discharge_curve([(r[0], r[1], r[2]) for r in rows if a <= r[0] <= b])
+        if not c:
+            return
+        col = QColor(COLORS['discharge'])
+        col.setAlpha(70)
+        x20, x80, x5 = c['t_20'] - self.t0, c['t_80'] - self.t0, c['t_start'] - self.t0
+        r = pg.LinearRegionItem(values=(x20, x80), movable=False, brush=QBrush(col), pen=pg.mkPen(None))
+        r.setZValue(-9)
+        line = pg.PlotDataItem([x20, x80], [c['v_mid'] / 1000] * 2,
+                               pen=pg.mkPen('#8b0000', width=1.5, style=Qt.DashLine))
+        dot = pg.ScatterPlotItem([x5], [c['v_start'] / 1000], size=9, brush=pg.mkBrush('#8b0000'), pen=pg.mkPen('w'))
+        label = pg.TextItem(tr('20–80 %: Ø {} V').format(f"{c['v_mid'] / 1000:.3f}"), color='#8b0000', anchor=(0.5, 1))
+        label.setPos((x20 + x80) / 2, c['v_mid'] / 1000)
+        label5 = pg.TextItem(tr('5 %: {} V').format(f"{c['v_start'] / 1000:.3f}"), color='#8b0000', anchor=(0, 1))
+        label5.setPos(x5, c['v_start'] / 1000)
+        for item in (r, line, dot, label, label5):
+            self.vb.addItem(item, ignoreBounds=True)
+            self.regions.append(item)
 
     def _align_zero(self):
         """Value ranges of current and mAh counter (visible part of the run) so that both zeros lie on one height:
@@ -1604,8 +1684,9 @@ class ResultPanel(QWidget):
         lay.addWidget(self.title)
         self.grade = QLabel('')
         self.grade.setAlignment(Qt.AlignCenter)
+        self.grade.setWordWrap(True)          # long rating line: two lines rather than cut off
         fg = QFont()
-        fg.setPointSize(18)
+        fg.setPointSize(15)
         fg.setBold(True)
         self.grade.setFont(fg)
         lay.addWidget(self.grade)
@@ -1615,12 +1696,19 @@ class ResultPanel(QWidget):
         fn.setBold(True)
         self.note.setFont(fn)
         lay.addWidget(self.note)
+        fields = QWidget()                    # details and phases scroll together instead of being squeezed
+        flay = QVBoxLayout(fields)
+        flay.setContentsMargins(0, 0, 0, 0)
         form = QFormLayout()
+        flay.addLayout(form)
         self.f = {}
         tips = self.field_tips()
         for k, name in [('task', tr('Task')), ('status', tr('Status')), ('type', tr('Detected')), ('time', tr('Time')),
+                        ('health', tr('Health index')), ('use', tr('Suited for')),
                         ('dis', tr('Discharge capacity')), ('chg', tr('Charge capacity')),
-                        ('res', tr('Internal resistance')), ('temp', tr('Max. temperature'))]:
+                        ('eta', tr('Charge efficiency')),
+                        ('res', tr('Internal resistance')), ('volt', tr('Voltage under load')),
+                        ('temp', tr('Max. temperature'))]:
             self.f[k] = QLabel('')
             self.f[k].setTextInteractionFlags(Qt.TextSelectableByMouse)
             self.f[k].setWordWrap(True)
@@ -1628,8 +1716,7 @@ class ResultPanel(QWidget):
             for w in (label, self.f[k]):
                 w.setToolTip(tips.get(k, ''))
             form.addRow(label, self.f[k])
-        lay.addLayout(form)
-        lay.addWidget(QLabel('<b>' + tr('Phases') + '</b>'))
+        flay.addWidget(QLabel('<b>' + tr('Phases') + '</b>'))
         self.phases = QTableWidget(0, 4)
         self.phases.setHorizontalHeaderLabels([tr('Phase'), tr('Start'), tr('Duration'), 'mAh'])
         self.phases.verticalHeader().hide()
@@ -1642,7 +1729,16 @@ class ResultPanel(QWidget):
         self.phases.setToolTip(tr('Click: show only this phase in the chart, click again: the whole run'))
         self.phases.cellClicked.connect(self._phase_clicked)
         self.phase_sel = None                 # start of the phase shown alone in the chart
-        lay.addWidget(self.phases, 1)
+        self.phases.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)    # as high as its rows (see _fit_phases)
+        self.phases.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        flay.addWidget(self.phases)
+        flay.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidget(fields)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        lay.addWidget(scroll, 1)
         edit = QFormLayout()
         self.model = SearchCombo()            # filters the battery list; locked to the battery's model once assigned
         self.model.currentIndexChanged.connect(self._model_picked)
@@ -1771,10 +1867,31 @@ class ResultPanel(QWidget):
                       'age and wear; a high value lets the voltage drop under load, so the device switches off '
                       'earlier. "min." is the lowest value of the session, first and last are the values at its '
                       'start and end.</p>'),
+            'health': tr('<p>Health index 0–100 from four scores, each 0–100: capacity (weight 40 %), internal '
+                         'resistance (30 %), voltage under load (20 %) and charge efficiency (10 %). A score that '
+                         'cannot be worked out is left out and the others weighted up. The index gives the '
+                         'category A–D; the user guide (Help) explains the calculation.</p>'),
+            'use': tr('<p>What the cell is still good for, from its category: A high drain (flash units, RC '
+                      'models), B medium drain (LED torches, mice), C low drain (remote controls, clocks), '
+                      'D recycle.</p>'),
+            'eta': tr('<p>Discharge capacity ÷ the charge put in after it. 75–85 % is normal for NiMH; less means '
+                      'losses (heat, self-discharge), more a charge that may have ended early. It counts once the '
+                      'charge after the discharge is finished.</p>'),
+            'volt': tr('<p>The voltage while discharging: after 5 % of the discharge, and the average from 20 to '
+                       '80 % (the plateau, shaded darker in the chart). A healthy NiMH cell stays above 1.15 V and '
+                       '1.20 V at a discharge current of about 0.2 C; falling below 1.0 V before 80 % is an early '
+                       'drop.</p>'),
             'temp': tr('<p>The highest temperature of the battery during the session. NiMH cells get warm towards '
                        'the end of charging, which is normal. Above about 45 °C the cell is stressed: check the '
                        'contacts and the charging current.</p>'),
         }
+
+    def _fit_phases(self):
+        """The phase table as high as its rows: the surrounding scroll area scrolls, not the table."""
+        t = self.phases
+        h = t.horizontalHeader().sizeHint().height() + 2 * t.frameWidth()     # height() is 0 before it is shown
+        h += sum(t.rowHeight(r) for r in range(t.rowCount()))
+        t.setFixedHeight(h)
 
     def _phase_clicked(self, row, _col):
         start = self.phases.item(row, 0).data(Qt.UserRole)
@@ -1810,6 +1927,7 @@ class ResultPanel(QWidget):
             for w in self.f.values():
                 w.setText('')
             self.phases.setRowCount(0)
+            self._fit_phases()
             self._set_model(None)
             self.reload_batteries(select=-1)
             self.nominal.set_value(0, '')
@@ -1824,13 +1942,12 @@ class ResultPanel(QWidget):
         g = d['grade'] or NO_GRADE
         nominal = d['nominal'] or NOMINAL.get(d['size'], 0)
         unrated = g == NO_GRADE and not nominal
+        h = health_of(d)
         pct = ''
-        if d['discharge_mah'] and nominal and g != NO_GRADE:     # e.g. "good (92 % capacity, resistance: poor)"
-            parts = [tr('{} % capacity').format(round(100 * d['discharge_mah'] / nominal))]
-            level = res_level(d['res_min'], d['chem']) if d['res_min'] else 0
-            if level >= 3:                    # poor / very poor: it lowered the rating
-                parts.append(tr('resistance: {}').format(tr_data(RES_QUALITY[level])))
-            pct = ' (' + ', '.join(parts) + ')'
+        if h and g in USES:                   # e.g. "B · medium drain • index 78 • Capa 92 % • Ω poor"
+            pct = ' • ' + tr('index {}').format(h['ohi']) + ' • ' + tr('Capa {} %').format(round(h['pct']))
+            if 'resistance' in h['scores']:
+                pct += ' • Ω ' + tr_data(RES_QUALITY[res_level(d['res_min'], d['chem'])])
         if d['task'] == CHARGE and not d['discharge_mah']:       # a plain charge measures no capacity
             g, unrated = NO_GRADE, False
             self.grade.setText(tr('Charging only, no analysis'))
@@ -1841,7 +1958,8 @@ class ResultPanel(QWidget):
             self.grade.setText(tr('Set the nominal capacity for a rating') if unrated else tr_data(g) + pct)
         self.grade.setStyleSheet(f"background:{GRADE_COLORS.get(g, '#888')}; color:white; padding:6px;"
                                  'border-radius:6px;' + ('font-size: 11pt;' if unrated else ''))
-        self.note.setText(note_of(d))
+        self.note.setText('' if h else note_of(d))     # with a health index the fields below show it all
+        self.note.setVisible(bool(self.note.text()))     # empty: no gap between the rating and the fields
         self.f['task'].setText(tr_data(d['task']))
         status = tr_data(d['status'])
         if d['status'] == RUNNING and d.get('phases'):          # running: what it is doing right now
@@ -1853,12 +1971,33 @@ class ResultPanel(QWidget):
                                f"({fmt_dur(d['end'] - d['start'])})")
         self.f['dis'].setText(f"{d['discharge_mah']} mAh" if d['discharge_mah'] else '–')
         self.f['chg'].setText(f"{d['charge_mah']} mAh" if d['charge_mah'] else '–')
+        names = {'capacity': tr('capacity'), 'resistance': tr('resistance'), 'voltage': tr('voltage'),
+                 'efficiency': tr('efficiency')}
+        self.f['health'].setText(tr('{} of 100').format(h['ohi']) + '  (' + ' · '.join(
+            f'{names[k]} {round(v)}' for k, v in h['scores'].items()) + ')' if h else '–')
+        self.f['use'].setText(tr_data(USES[g]) if h and g in USES else '–')
+        if h and h['eta']:
+            self.f['eta'].setText(f"{round(h['eta'])} %")
+        elif d['discharge_mah'] and d['charge_mah'] and d['status'] == RUNNING:
+            self.f['eta'].setText(tr('when the charge is finished'))
+        else:
+            self.f['eta'].setText('–')
+        if d.get('v_mid'):
+            volt = (tr('{} V after 5 %').format(f"{d['v_start'] / 1000:.3f}") + ' · ' +
+                    tr('{} V on average 20–80 %').format(f"{d['v_mid'] / 1000:.3f}"))
+            if d.get('early_drop'):
+                volt += ' · ' + tr('below 1.0 V before 80 %')
+            self.f['volt'].setText(volt)
+        else:
+            self.f['volt'].setText('–')
         if d.get('res_first'):
             self.f['res'].setText(tr('min. {} · first {} · last {} mΩ').format(d['res_min'], d['res_first'],
                                                                                 d['res_last']))
         else:
             self.f['res'].setText(tr('min. {} mΩ').format(d['res_min']) if d['res_min'] else '–')
-        if d['res_min']:                      # rating of the value; lower is better (not obvious to everyone)
+        if d.get('res_est') and d['res_min']:   # A4 Air over USB: worked out by BattBench, not rated
+            self.f['res'].setText(self.f['res'].text() + '  –  ' + tr('estimated, not rated'))
+        elif d['res_min']:                    # rating of the value; lower is better (not obvious to everyone)
             self.f['res'].setText(self.f['res'].text() + '  –  ' + tr_data(RES_QUALITY[res_level(d['res_min'], d['chem'])]))
         self.f['temp'].setText(f"{d['temp_max']} °C" if d['temp_max'] else '–')
         if not same:
@@ -1872,6 +2011,7 @@ class ResultPanel(QWidget):
                     it.setData(Qt.UserRole, a)
                 self.phases.setItem(i, j, it)
         self.mark_phase(self.phase_sel)
+        self._fit_phases()
         # refill the edit fields for a new session, or when the stored values changed and the user
         # hasn't touched the fields (don't overwrite what is being selected / typed)
         if not same or self.battery.currentData() == self.shown[0]:
@@ -1893,7 +2033,6 @@ def session_headers():
             'grade': tr('Rating'), 'dur': tr('Duration')}
 
 
-GRADE_RANK = {g: len(GRADES) - i for i, g in enumerate(GRADES)}          # sort key: worst grade first
 
 
 def make_table(headers, autofilter=False, stretch=True):
@@ -1953,6 +2092,21 @@ def _user_resized(t):
     fit_columns, a refill or a window resize)."""
     if not t.fitting and t.header_drag.pressed:
         t.user_widths = True
+
+
+def scrolled(widget):
+    """widget in a frameless scroll area: its height no longer sets the minimum height of the tab pane."""
+    area = QScrollArea()
+    area.setWidget(widget)
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.NoFrame)
+    return area
+
+
+def backup_policy():
+    """Backup settings (QSettings 'backup_<key>', defaults db.BACKUP_DEFAULTS)."""
+    s = QSettings('battbench', 'battbench')
+    return {k: s.value('backup_' + k, v, type=int) for k, v in BACKUP_DEFAULTS.items()}
 
 
 def show_deleted():
@@ -2071,8 +2225,7 @@ def _fill_session_rows(table, rows, cols):
                 'pct': (pct, 100 * dis / nominal if dis and nominal else None),
                 'chg': (d['charge_mah'] or '', d['charge_mah'] or None), 'rmin': (d['res_min'] or '', d['res_min'] or None),
                 'tmax': (d['temp_max'] or '', d['temp_max'] or None),
-                'grade': (tr_data(RUNNING) if is_measuring(d) else tr_data(d['grade'] or NO_GRADE),
-                          GRADE_RANK.get(d['grade'], 0)),
+                'grade': ((tr_data(RUNNING), None) if is_measuring(d) else grade_cell(d['grade'], d['ohi'])[:2]),
                 'dur': (fmt_dur(d['end'] - d['start']), d['end'] - d['start'])}
         for j, c in enumerate(cols):
             text, key = vals[c]
@@ -2089,6 +2242,7 @@ def _fill_session_rows(table, rows, cols):
                 if j == 0:
                     it.setText(f"{text} {tr('(deleted)')}")
             if c == 'grade':
+                it.setData(FILTER_ROLE, tr_data(RUNNING) if is_measuring(d) else grade_cell(d['grade'], d['ohi'])[2])
                 it.setBackground(QColor(GRADE_COLORS.get(d['grade'] or NO_GRADE, '#888')))
                 it.setForeground(QColor('white'))
                 it.setToolTip(note)
@@ -2131,7 +2285,7 @@ class BatteryTab(QWidget):
                                  tr('Last mAh'), tr('Rating'), tr('Last measured'), tr('Last charged'),
                                  tr('Description')], autofilter=True)
         self.table.autofilter.extra = self._matches
-        self.table.autofilter.header.desc_first = {5, 8, 9}      # sessions, last measured, last charged
+        self.table.autofilter.header.desc_first = {5, 7, 8, 9}   # first click: highest first (count, rating, dates)
         self.table.sortByColumn(0, Qt.AscendingOrder)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)      # Ctrl / Shift: several, to delete
         self.table.itemSelectionChanged.connect(self.show_history)
@@ -2146,6 +2300,7 @@ class BatteryTab(QWidget):
         right.addWidget(self.hist_title)
         heads = session_headers()
         self.hist = make_table([heads[c] for c in self.HIST_COLS], autofilter=True, stretch=False)
+        self.hist.autofilter.header.desc_first = {self.HIST_COLS.index('grade')}     # best first
         self.hist.sortByColumn(0, Qt.DescendingOrder)
         self.hist.setSelectionMode(QAbstractItemView.ExtendedSelection)      # Ctrl / Shift: several, to delete
         self.hist.cellDoubleClicked.connect(
@@ -2177,12 +2332,13 @@ class BatteryTab(QWidget):
         self.table.setSortingEnabled(False)       # rows would move while being filled
         self.table.setRowCount(len(rows))
         for i, (bid, name, maker, cap, typ, desc, n, last, grade, _mid, _mmaker, mname, t_meas,
-                t_chg, deleted) in enumerate(rows):
+                t_chg, deleted, ohi) in enumerate(rows):
             pct = f' ({100 * last / cap:.0f} %)' if last and cap else ''
+            rating = grade_cell(grade, ohi) if grade else ('', None, '')
             cells = [(f"{bid} {tr('(deleted)')}" if deleted else bid, bid), (maker, maker.lower()),
                      (mname or '', (mname or '').lower()), (f'{cap} mAh' if cap else '', cap or None),
                      (typ, typ.lower()), (n, n),
-                     (f'{last}{pct}' if last else '', last), (tr_data(grade or ''), GRADE_RANK.get(grade)),
+                     (f'{last}{pct}' if last else '', last), rating[:2],
                      (fmt_t(t_meas), t_meas), (fmt_t(t_chg), t_chg),
                      ((desc or '').replace('\n', ' '), (desc or '').lower())]
             for j, (text, key) in enumerate(cells):
@@ -2197,6 +2353,7 @@ class BatteryTab(QWidget):
                 if j in (8, 9):
                     it.setData(FILTER_ROLE, fmt_day(key))
                 if j == 7 and grade:
+                    it.setData(FILTER_ROLE, rating[2])
                     it.setBackground(QColor(GRADE_COLORS.get(grade, '#888')))
                     it.setForeground(QColor('white'))
                 if j == 10:
@@ -2671,6 +2828,38 @@ class SettingsTab(QWidget):
         row.addWidget(compress_now)
         row.addStretch(1)
         form.addRow('', row)
+        settings = QSettings('battbench', 'battbench')
+        policy = backup_policy()
+        rows = [('hours', tr('Every'), tr('h (and on exit; 0 = only on exit)'), 0, 24 * 7),
+                ('keep', tr('Keep the last'), tr('backups'), 1, 999),
+                ('daily', tr('plus the last'), tr('daily'), 0, 999),
+                ('weekly', '', tr('weekly'), 0, 999),
+                ('monthly', '', tr('monthly backups'), 0, 999)]
+        tips = {'hours': tr('A backup is saved when BattBench is closed and, while it runs, every so many hours.'),
+                'keep': tr('The newest backups, whatever their age.'),
+                'daily': tr('The newest backup of each of the last days that have one.'),
+                'weekly': tr('The newest backup of each of the last weeks that have one.'),
+                'monthly': tr('The newest backup of each of the last months that have one.')}
+        line = QHBoxLayout()
+        for i, (key, before, after, lo, hi) in enumerate(rows):
+            if key == 'keep':                 # second line: what is kept
+                line.addStretch(1)
+                form.addRow(tr('Backups:'), line)
+                line = QHBoxLayout()
+            spin = QSpinBox()
+            spin.setRange(lo, hi)
+            spin.setValue(policy[key])
+            spin.setToolTip(tips[key])
+            spin.valueChanged.connect(lambda v, key=key: settings.setValue('backup_' + key, v))
+            if before:
+                line.addWidget(QLabel(before))
+            line.addWidget(spin)
+            line.addWidget(QLabel(after + (',' if key in ('keep', 'daily', 'weekly') else '')))
+        line.addStretch(1)
+        form.addRow('', line)
+        where = QLabel(tr('Saved next to the database as {}').format(os.path.basename(db.path) + '-YYYYMMDD-HHMMSS.gz'))
+        where.setStyleSheet('color: palette(placeholder-text);')
+        form.addRow('', where)
         self.stats = QLabel()
         self.stats.setTextFormat(Qt.RichText)
         form.addRow(tr('Database:'), self.stats)
@@ -2926,6 +3115,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         heads = session_headers()
         self.table = make_table([heads[c] for c in self.COLS], autofilter=True, stretch=False)
+        self.table.autofilter.header.desc_first = {self.COLS.index('grade')}         # best first
         self.table.sortByColumn(0, Qt.DescendingOrder)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)      # Ctrl / Shift: several, to delete
         row_menu(self.table, None, self.delete_sessions, enter=self.result.battery.setFocus)
@@ -2949,11 +3139,11 @@ class MainWindow(QMainWindow):
         self.stab = SettingsTab(self.db)
         self.stab.deleted_changed.connect(self.deleted_changed)
         self.stab.compressed.connect(self.data_changed)
-        self.tabs.addTab(self.stab, tr('Settings'))
+        self.tabs.addTab(scrolled(self.stab), tr('Settings'))   # long pages scroll: the pane can be made low
         self.tabs.addTab(HelpTab(), tr('Help'))
-        self.tabs.addTab(InfoTab(db_path), tr('Info'))
+        self.tabs.addTab(scrolled(InfoTab(db_path)), tr('Info'))
         vsplit.addWidget(self.tabs)
-        vsplit.setSizes([200, 500, 250])
+        vsplit.setSizes([200, 535, 215])          # tiles, chart + result, tables
         root.addWidget(vsplit, 1)
         self.setCentralWidget(central)
 
@@ -3107,7 +3297,9 @@ class MainWindow(QMainWindow):
                 smp = self.live.get((dev, slot))
                 t.update_sample(smp)
                 s = self.cur.get((dev, slot)) if smp and smp['mode'] else None     # battery in the slot
-                t.set_battery(self.db.battery_of(s['id']) if s and s['id'] else None)
+                h = health_of(s) if s and s['grade'] in USES else None
+                t.set_battery(self.db.battery_of(s['id']) if s and s['id'] else None,
+                              grade_cell(s['grade'], h['ohi'])[0] if h else '')
         self._fit_tiles()
         if self.hist_id is None:
             s = self.cur.get(self.sel)
@@ -3154,6 +3346,7 @@ class MainWindow(QMainWindow):
                 return self.plot.clear_data()
             dev, slot, t0, t1 = d['dev'], d['slot'], d['start'], d['end']
             phases = self.db.phases(self.hist_id)
+            self.plot.show_curve = True
             title = ' · '.join((self.dev_name(dev), tr('Slot {}').format(slot + 1), fmt_t(t0), tr_data(d['task'])))
         else:
             s = self.cur.get(self.sel)
@@ -3161,6 +3354,7 @@ class MainWindow(QMainWindow):
                 return self.plot.clear_data(' · '.join((self.dev_name(self.sel[0]), tr('Slot {}').format(self.sel[1] + 1)))
                                             + ': ' + tr('no running session') if self.sel else '')
             dev, slot, t0, t1, phases = s['dev'], s['slot'], s['start'], s['end'], s['phases']
+            self.plot.show_curve = not is_measuring(s)          # a running discharge is not over yet
             title = ' · '.join((self.dev_name(dev), tr('Slot {}').format(slot + 1), fmt_t(t0), tr_data(s['task']))) + ' (live)'
         self.plot.set_data(self.db.samples(dev, slot, t0, t1 + 1), phases, title, keep_view)
 
@@ -3358,7 +3552,7 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
         self.db.con.close()
         try:
-            close_and_backup(self.db.path)
+            close_and_backup(self.db.path, backup_policy())
         except (OSError, sqlite3.Error) as err:
             print(f'backup failed: {err!r}', file=sys.stderr)
         super().closeEvent(e)

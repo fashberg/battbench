@@ -27,8 +27,9 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
 ## Run and test
 - `run.bat [--offline] [--db FILE] [--lang en|de]` (creates `.venv` on first run). Database: `--db`, else
   `$BATTBENCH_DB`, else `%LOCALAPPDATA%\BattBench\battbench.db` (installed app; source runs too if it exists), else
-  `battbench.db` in the project folder. On exit `db.close_and_backup` checkpoints the WAL and writes
-  `<db>-YYYYMMDD-HHMMSS.gz` (last 10 kept).
+  `battbench.db` in the project folder. Backups `<db>-YYYYMMDD-HHMMSS.gz`: on exit (`db.close_and_backup`, checkpoints
+  the WAL) and every `backup_hours` while running (`Worker._auto_backup`, own thread and connection); `prune_backups`
+  keeps the last n plus the newest of the last n days / weeks / months (`BACKUP_DEFAULTS`, settings in the app).
 - `DB.compress_samples` (setting `compress`, button in *Settings*): readings → one per minute / mode / current
   direction, `raw = '1m'`; never readings from `DB.resume_window()` on: a restart rebuilds the sessions of *all*
   slots from there, compressed readings would change them (short ones would vanish).
@@ -36,7 +37,8 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
   (`sqlite3.connect('file:battbench.db?mode=ro', uri=True)`) and test changes / migrations on a copy (`.backup()`).
 - GUI without a window: `QT_QPA_PLATFORM=offscreen` (+ `QT_QPA_FONTDIR=C:/Windows/Fonts` for screenshots),
   `MainWindow(db_copy, 'offline')`, clicks via `QtTest`; call `i18n.install(app, 'de')` to test German.
-- Static check: `pyflakes`. Hanging app: `py-spy dump --pid <pid>`.
+- Unit tests (rating): `.venv\Scripts\python -m unittest discover tests`. Static check: `pyflakes`. Hanging app:
+  `py-spy dump --pid <pid>`.
 
 ## Translations
 - `tr('text')` for UI texts and messages. `lupdate` does **not** see `tr()` inside f-strings: build the text outside,
@@ -53,11 +55,18 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
   once together with the reading before it and the last one under load (resume rebuilds the same sessions and
   phases). Pauses of pulsed charging (A4 Air, 0 mA) are no change and are skipped. The worker flushes the
   held-back readings on exit. `DB.samples` thins older 1 s data the same way for the chart (`thin_rows`).
-- **DB upgrades** in `DB.__init__` via `PRAGMA user_version` (currently 10): 1 N8 size "AA/AAA", 2 N8 mode 9/10 →
+- **DB upgrades** in `DB.__init__` via `PRAGMA user_version` (currently 12): 1 N8 size "AA/AAA", 2 N8 mode 9/10 →
   13/14, 3 drop sessions < 10 s, 4 German stored values → English, 5 / 6 soft delete, 8 thin readings
   (`thin_samples`; 7 was an unreleased first try), 10 drop glitch phases of a single reading and re-rate all
-  sessions (poor resistance caps at good; 9 unreleased).
+  sessions (poor resistance caps at good; 9 unreleased), 11 health index columns (`_health_columns`), 12 `sessions.ohi`
+  (the index itself, tables show and sort by it).
   New upgrade = next number, own method.
+- **Rating** = NiMH health index (`model.health`, explained in the README section *Rating*): scores for capacity,
+  resistance (charger scale = `RES_LIMITS`), voltage under load and charge efficiency, weighted 40/30/20/10, missing
+  ones left out; the category A–D is the stored `grade`. The voltage curve of the last discharge is evaluated by
+  `Tracker` (`Session.points` → `finish_curve`) and kept in `sessions.v_start / v_mid / early_drop`; `res_est` marks an
+  estimated resistance (A4 Air over USB, `device.res_estimated`), which is not rated. `DB.rate_missing` (worker start)
+  evaluates finished sessions without a curve from their stored readings.
 - **Mode ids**: the N8 reports activation as 9/10; `device.N8_MODES` maps it to 13/14 when reading (9 stays "cycle" for
   SkyRC / A4). Analysis = 11 throughout, the phase follows the sign of the current.
 - Sessions shorter than `MIN_SECS` (10 s) are not stored (`DB.save_dirty`).
@@ -67,7 +76,8 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
   run time; block signals while refilling programmatically (`blockSignals`).
 - **Only read-only commands** go to the chargers (ISDT: `0xE0`, `0xDE`, `0xE4`, `0xFE 00`; SkyRC: status queries).
   Commands like `57` / `74` / `65` and `FE` other than `FE 00` restart or stop running tasks.
-- Settings: `QSettings('battbench', 'battbench')` keys `a4`, `lang`, `show_deleted`, `compress`, `hidden_series`.
+- Settings: `QSettings('battbench', 'battbench')` keys `a4`, `lang`, `show_deleted`, `compress`, `hidden_series`,
+  `backup_hours` / `backup_keep` / `backup_daily` / `backup_weekly` / `backup_monthly`.
   Window position / size, splitter positions and column widths the user dragged (`cols_<table>`, see
   `MainWindow.width_tables`) are stored in the database (`settings` table, `save_layout` / `restore_layout`); a window
   not completely on a screen is reset to the default size. Columns are `Interactive` and fitted to the contents after

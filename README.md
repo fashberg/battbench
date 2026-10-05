@@ -28,7 +28,8 @@ charger over USB and logs everything for me – and on top of that keeps a datab
   temperature, progress.
 - **One chart per run** with voltage, current, mAh, internal resistance and temperature, each on its own axis.
 - **Automatic session detection**, also across restarts of the app.
-- **Rating** of capacity and internal resistance.
+- **Rating**: a health index from capacity, internal resistance, voltage under load and charge efficiency, with a
+  category (A high drain … D recycle) and what the cell is still good for.
 - **Battery tracking**: a number per cell and its whole history, across chargers and slots.
 - **Battery models** with nominal capacity; a list of common cells is included.
 - Spreadsheet-like filters on all tables, light and dark Windows theme.
@@ -128,28 +129,81 @@ The N8 does not tell AA from AAA, so its sessions are only rated once a battery,
   (stopped, replaced by another task, or the data broke off).
 
 ### Rating
-The capacity is compared with the nominal capacity:
+A session that measured a discharge (analysis, discharge, cycle) gets a **health index** from 0 to 100 and from it a
+**category**. The index is made of four scores of 0–100 each:
 
-| Rating | Discharge capacity |
-|---|---|
-| very good | from 90 % |
-| good | from 80 % |
-| fair | from 60 % |
-| worn out | below 60 % |
-
-The internal resistance is rated as well:
-
-| Rating | NiMH / NiCd / NiZn | Li-ion / LiFePO4 |
+| Score | Weight | From |
 |---|---|---|
-| very good | below 150 mΩ | below 50 mΩ |
-| good | below 300 mΩ | below 100 mΩ |
-| medium | below 450 mΩ | below 150 mΩ |
-| poor | below 600 mΩ | below 200 mΩ |
-| very poor | from 600 mΩ | from 200 mΩ |
+| Capacity | 40 % | discharge capacity in % of the nominal capacity |
+| Internal resistance | 30 % | lowest internal resistance of the session |
+| Voltage under load | 20 % | voltage curve of the (last) discharge |
+| Charge efficiency | 10 % | discharge capacity ÷ the charge put in after it |
 
-The internal resistance caps the rating: with a *poor* one a cell is at most *good*, with a *very poor* one at most
-*fair* – such a cell delivers its capacity at moderate currents but its voltage drops under higher load. A cell without a capacity measurement
-but with a very high resistance (from 1000 mΩ NiMH / 400 mΩ Li-ion) is marked *suspicious*.
+**Capacity** – SoH = discharge capacity ÷ nominal capacity × 100:
+
+| SoH | Score |
+|---|---|
+| from 90 % | 100 |
+| 70–90 % | 100 − (90 − SoH) × 2.5, i.e. 50 … 100 |
+| 50–70 % | 50 − (70 − SoH) × 2, i.e. 10 … 50 |
+| below 50 % | 0 |
+
+**Internal resistance** – as the charger measures it. Contacts and leads are included, so a healthy NiMH AA shows
+about 150–220 mΩ on an N8 where a 4-wire meter shows 20–30 mΩ. The usual steps for 4-wire values (30 / 60 / 120 /
+250 mΩ) are therefore moved to the charger scale; in between the score falls in a straight line:
+
+| NiMH / NiCd / NiZn | Li-ion / LiFePO4 | Score | Shown as |
+|---|---|---|---|
+| below 150 mΩ | below 50 mΩ | 100 | very good |
+| 150–300 mΩ | 50–100 mΩ | 100 → 75 | good |
+| 300–450 mΩ | 100–150 mΩ | 75 → 40 | medium |
+| 450–600 mΩ | 150–200 mΩ | 40 → 0 | poor |
+| from 600 mΩ | from 200 mΩ | 0 | very poor |
+
+**Voltage under load** (NiMH) – from the readings of the last discharge. The positions are fractions of the charge
+taken out (added up from the current), so a slow end of the discharge doesn't shift them:
+- *V5* = voltage after 5 %: below 1.15 V costs (1.15 V − V5) × 200 points,
+- *Vmid* = average voltage from 20 to 80 % (the plateau): below 1.20 V costs (1.20 V − Vmid) × 150 points,
+- *early drop* = below 1.0 V before 80 %: costs 30 points.
+
+Score = 100 minus these points (at least 0). The limits hold for a discharge current of about 0.2 C (about 500 mA for
+an AA, the current of the N8). The chart shades the plateau of the last discharge darker and marks both values.
+
+**Charge efficiency** – η = discharge capacity ÷ charge put in after the discharge; it counts once that charge is
+finished:
+
+| η | Score |
+|---|---|
+| 75–85 % | 100 (normal for NiMH) |
+| 65–75 % | 100 − (75 − η) × 3 |
+| below 65 % | 70 − (65 − η) × 4, at least 0 (losses, heat) |
+| above 85 % | 50 (the charge may have ended early) |
+
+The N8 often reports a charge only a little above the discharge (90–100 %); with a weight of 10 % this costs at most
+5 points.
+
+**Health index** = 0.4 × capacity + 0.3 × resistance + 0.2 × voltage + 0.1 × efficiency. A score that can't be worked
+out is left out and the weights of the others scaled up to 100 %: no charge after the discharge (task *discharge*, or
+still charging), no voltage curve, no resistance – or only an estimated one: the A4 Air over USB reports none,
+BattBench estimates it from its charging pauses (≈ in the slot tile) and doesn't rate it.
+
+| Category | Condition | Suited for |
+|---|---|---|
+| A · high drain | index from 85 and resistance below 300 mΩ (Li-ion: 100 mΩ) | flash units, RC models, motorised toys |
+| B · medium drain | index 70–85 | LED torches, computer mice, bicycle lights |
+| C · low drain | index 50–70 | remote controls, wall clocks, solar lights |
+| D · recycle | index below 50, capacity below 70 % or resistance score 0 | no longer usable |
+
+The tables show the rating as index · category, e.g. *98 · A · high*, and sort by the index (best first on the first
+click); the slot tiles show it behind the battery, e.g. *Slot 4 – #5 · 78 · B · medium*.
+
+Without a nominal capacity there is no rating (assign the battery or enter it). A cell without a capacity
+measurement but with a very high resistance (from 1000 mΩ NiMH / 400 mΩ Li-ion) is marked *suspicious*. Sessions
+measured with an older version are evaluated from their stored readings when the app starts.
+
+The limits follow IEC 61951-2 (end of discharge at 1.0 V at 0.2 C, charge efficiency of NiMH), the data sheets of
+Panasonic eneloop, GP and Varta (internal resistance) and the 80 % / 50 % capacity limits of chargers like the SkyRC
+MC3000 and Maha MH-C9000.
 
 ### Using the app
 - **Charger tabs** at the top: name, input voltage, connection (USB / Bluetooth symbol) and one LED per slot – grey
@@ -161,7 +215,8 @@ but with a very high resistance (from 1000 mΩ NiMH / 400 mΩ Li-ion) is marked 
 - **Chart**: point at a curve, legend entry or axis to highlight it; click a legend entry or axis to show or hide a
   value. Click a shaded phase (or a row in the phase list) to see only that phase. Drag to draw a frame and zoom to
   it; once zoomed in, dragging in the lower two thirds scrolls through time (the upper third still draws a frame).
-  Right click zooms out; the house symbol (bottom left) shows everything again.
+  Right click zooms out; the house symbol (bottom left) shows everything again. The last discharge shows its plateau
+  (20–80 %) shaded darker, with the average voltage there (dashed) and the voltage after 5 % (dot).
 - **Tables** (bottom): click a column title to sort; the funnel in a column title filters like a spreadsheet.
   *Sessions* lists all sessions, *Batteries* your batteries with their history on the right, *Models* the model list,
   *Chargers* the known chargers (rename them here – the name is stored only in BattBench).
@@ -186,9 +241,10 @@ Chargers marked “–” are supported by protocol but have not been tried on r
 All readings, sessions, batteries and models are stored in one database file (SQLite) on your computer, normally
 `%LOCALAPPDATA%\BattBench\battbench.db`. The tab *Info* shows which file is used, *Settings* its size and number of
 entries. Nothing is sent anywhere.
-- **Backups**: when BattBench is closed it saves a compressed copy next to the database
-  (`battbench.db-YYYYMMDD-HHMMSS.gz`); the last 10 are kept. To restore one, unpack it (e.g. with 7-Zip) and replace
-  `battbench.db` while BattBench is closed.
+- **Backups**: BattBench saves a compressed copy next to the database (`battbench.db-YYYYMMDD-HHMMSS.gz`) when it is
+  closed and, while it runs, every 12 hours. Kept are the last 10 backups plus the newest one of each of the last 20
+  days, 8 weeks and 24 months; all of this can be changed in *Settings*. To restore one, unpack it (e.g. with 7-Zip)
+  and replace `battbench.db` while BattBench is closed.
 - **Compressing old readings** (*Settings*, on by default): readings older than two weeks are reduced to one per
   minute automatically – per minute the median of voltage, current, resistance and temperature and the last counter values;
   sessions and ratings stay as they are, only the curves of old sessions get coarser. *Compress all readings now*

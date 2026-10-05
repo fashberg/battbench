@@ -64,29 +64,82 @@ Nennkapazität gesetzt sind.
   *abgebrochen* (gestoppt, durch eine andere Aufgabe ersetzt oder die Daten brachen ab).
 
 ### Bewertung
-Die Kapazität wird mit der Nennkapazität verglichen:
+Ein Vorgang mit gemessener Entladung (Analyse, Entladen, Zyklus) bekommt einen **Gesundheitsindex** von 0 bis 100 und
+daraus eine **Kategorie**. Der Index setzt sich aus vier Teilnoten von je 0–100 zusammen:
 
-| Bewertung | Entladekapazität |
-|---|---|
-| sehr gut | ab 90 % |
-| gut | ab 80 % |
-| mäßig | ab 60 % |
-| verbraucht | unter 60 % |
-
-Auch der Innenwiderstand wird bewertet:
-
-| Bewertung | NiMH / NiCd / NiZn | Li-Ion / LiFePO4 |
+| Teilnote | Gewicht | Aus |
 |---|---|---|
-| sehr gut | unter 150 mΩ | unter 50 mΩ |
-| gut | unter 300 mΩ | unter 100 mΩ |
-| mittel | unter 450 mΩ | unter 150 mΩ |
-| schlecht | unter 600 mΩ | unter 200 mΩ |
-| sehr schlecht | ab 600 mΩ | ab 200 mΩ |
+| Kapazität | 40 % | Entladekapazität in % der Nennkapazität |
+| Innenwiderstand | 30 % | kleinster Innenwiderstand des Vorgangs |
+| Spannung unter Last | 20 % | Spannungsverlauf der (letzten) Entladung |
+| Ladeeffizienz | 10 % | Entladekapazität ÷ danach eingeladene Ladung |
 
-Der Innenwiderstand begrenzt die Bewertung: Mit einem *schlechten* ist ein Akku höchstens *gut*, mit einem *sehr
-schlechten* höchstens *mäßig* – so ein Akku liefert seine Kapazität bei mäßigem Strom, unter höherer Last bricht
-die Spannung aber ein. Ein Akku ohne
-Kapazitätsmessung, aber mit sehr hohem Widerstand (ab 1000 mΩ NiMH / 400 mΩ Li-Ion) gilt als *verdächtig*.
+**Kapazität** – SoH = Entladekapazität ÷ Nennkapazität × 100:
+
+| SoH | Teilnote |
+|---|---|
+| ab 90 % | 100 |
+| 70–90 % | 100 − (90 − SoH) × 2,5, also 50 … 100 |
+| 50–70 % | 50 − (70 − SoH) × 2, also 10 … 50 |
+| unter 50 % | 0 |
+
+**Innenwiderstand** – so, wie das Ladegerät ihn misst. Kontakte und Leitungen sind mit drin, ein gesunder NiMH-AA zeigt
+am N8 etwa 150–220 mΩ, wo ein 4-Leiter-Messgerät 20–30 mΩ zeigt. Die üblichen Stufen für 4-Leiter-Werte (30 / 60 /
+120 / 250 mΩ) sind deshalb auf die Skala der Ladegeräte übertragen; dazwischen fällt die Teilnote gleichmäßig:
+
+| NiMH / NiCd / NiZn | Li-Ion / LiFePO4 | Teilnote | Angezeigt als |
+|---|---|---|---|
+| unter 150 mΩ | unter 50 mΩ | 100 | sehr gut |
+| 150–300 mΩ | 50–100 mΩ | 100 → 75 | gut |
+| 300–450 mΩ | 100–150 mΩ | 75 → 40 | mittel |
+| 450–600 mΩ | 150–200 mΩ | 40 → 0 | schlecht |
+| ab 600 mΩ | ab 200 mΩ | 0 | sehr schlecht |
+
+**Spannung unter Last** (NiMH) – aus den Messwerten der letzten Entladung. Die Positionen sind Anteile der entnommenen
+Ladung (aus dem Strom aufsummiert), ein langsames Ende der Entladung verschiebt sie also nicht:
+- *V5* = Spannung nach 5 %: unter 1,15 V kostet (1,15 V − V5) × 200 Punkte,
+- *Vmid* = mittlere Spannung von 20 bis 80 % (das Plateau): unter 1,20 V kostet (1,20 V − Vmid) × 150 Punkte,
+- *früher Einbruch* = unter 1,0 V vor 80 %: kostet 30 Punkte.
+
+Teilnote = 100 minus diese Punkte (mindestens 0). Die Grenzen gelten für einen Entladestrom von etwa 0,2 C (etwa
+500 mA bei einem AA, der Strom des N8). Das Diagramm hinterlegt das Plateau der letzten Entladung dunkler und markiert
+beide Werte.
+
+**Ladeeffizienz** – η = Entladekapazität ÷ nach der Entladung eingeladene Ladung; sie zählt, sobald diese Ladung
+fertig ist:
+
+| η | Teilnote |
+|---|---|
+| 75–85 % | 100 (normal für NiMH) |
+| 65–75 % | 100 − (75 − η) × 3 |
+| unter 65 % | 70 − (65 − η) × 4, mindestens 0 (Verluste, Wärme) |
+| über 85 % | 50 (Ladung womöglich zu früh beendet) |
+
+Der N8 meldet oft eine Ladung nur wenig über der Entladung (90–100 %); bei 10 % Gewicht kostet das höchstens 5 Punkte.
+
+**Gesundheitsindex** = 0,4 × Kapazität + 0,3 × Widerstand + 0,2 × Spannung + 0,1 × Effizienz. Eine Teilnote, die sich
+nicht bestimmen lässt, fällt weg, die Gewichte der anderen werden auf 100 % hochgerechnet: keine Ladung nach der
+Entladung (Aufgabe *Entladen*, oder lädt noch), kein Spannungsverlauf, kein Widerstand – oder nur ein geschätzter: Der
+A4 Air meldet über USB keinen, BattBench schätzt ihn aus seinen Ladepausen (≈ in der Schacht-Kachel) und bewertet ihn
+nicht.
+
+| Kategorie | Bedingung | Geeignet für |
+|---|---|---|
+| A · hohe Last | Index ab 85 und Widerstand unter 300 mΩ (Li-Ion: 100 mΩ) | Blitzgeräte, RC-Modelle, motorisiertes Spielzeug |
+| B · mittlere Last | Index 70–85 | LED-Taschenlampen, Computermäuse, Fahrradlichter |
+| C · geringe Last | Index 50–70 | Fernbedienungen, Wanduhren, Solarleuchten |
+| D · Recycling | Index unter 50, Kapazität unter 70 % oder Widerstands-Teilnote 0 | nicht mehr verwendbar |
+
+Die Tabellen zeigen die Bewertung als Index · Kategorie, z. B. *98 · A · hoch*, und sortieren nach dem Index (beim
+ersten Klick die besten zuerst); die Schacht-Kacheln zeigen sie hinter dem Akku, z. B. *Slot 4 – #5 · 78 · B · mittel*.
+
+Ohne Nennkapazität gibt es keine Bewertung (Akku zuordnen oder eintragen). Ein Akku ohne Kapazitätsmessung, aber mit
+sehr hohem Widerstand (ab 1000 mΩ NiMH / 400 mΩ Li-Ion) gilt als *verdächtig*. Vorgänge, die mit einer älteren
+Version gemessen wurden, werden beim Start aus ihren gespeicherten Messwerten ausgewertet.
+
+Die Grenzen folgen IEC 61951-2 (Entladeschluss 1,0 V bei 0,2 C, Ladeeffizienz von NiMH), den Datenblättern von
+Panasonic eneloop, GP und Varta (Innenwiderstand) und den 80-%- / 50-%-Kapazitätsgrenzen von Ladegeräten wie SkyRC
+MC3000 und Maha MH-C9000.
 
 ### Bedienung
 - **Ladegeräte-Reiter** oben: Name, Eingangsspannung, Verbindung (USB-/Bluetooth-Symbol) und eine LED pro Schacht –
@@ -99,7 +152,8 @@ Kapazitätsmessung, aber mit sehr hohem Widerstand (ab 1000 mΩ NiMH / 400 mΩ L
   Legende oder Achse blendet ihn aus oder ein. Ein Klick auf eine farbige Phase (oder eine Zeile der Phasenliste)
   zeigt nur diese Phase. Ziehen zieht einen Rahmen und zoomt darauf; ist hineingezoomt, scrollt Ziehen in den unteren
   zwei Dritteln durch die Zeit (im oberen Drittel weiterhin Rahmen). Ein Rechtsklick zoomt heraus; das Haus-Symbol
-  (unten links) zeigt wieder alles.
+  (unten links) zeigt wieder alles. Bei der letzten Entladung ist das Plateau (20–80 %) dunkler hinterlegt, mit der
+  mittleren Spannung dort (gestrichelt) und der Spannung nach 5 % (Punkt).
 - **Tabellen** (unten): Klick auf einen Spaltentitel sortiert; der Trichter im Spaltentitel filtert wie in einer
   Tabellenkalkulation. *Vorgänge* listet alle Vorgänge, *Akkus* deine Akkus mit ihrem Verlauf rechts, *Modelle* die
   Modellliste, *Ladegeräte* die bekannten Ladegeräte (hier umbenennen – der Name wird nur in BattBench gespeichert).
@@ -125,9 +179,10 @@ Mit „–“ markierte Ladegeräte werden laut Protokoll unterstützt, wurden a
 Alle Messwerte, Vorgänge, Akkus und Modelle liegen in einer Datenbankdatei (SQLite) auf deinem Rechner, normalerweise
 `%LOCALAPPDATA%\BattBench\battbench.db`. Der Reiter *Info* zeigt, welche Datei verwendet wird, die *Einstellungen*
 zeigen Größe und Anzahl der Einträge. Es wird nichts irgendwohin gesendet.
-- **Sicherungen**: Beim Beenden legt BattBench eine komprimierte Kopie neben die Datenbank
-  (`battbench.db-JJJJMMTT-HHMMSS.gz`); die letzten 10 bleiben erhalten. Zum Zurückspielen eine entpacken (z. B. mit
-  7-Zip) und `battbench.db` ersetzen, während BattBench geschlossen ist.
+- **Sicherungen**: BattBench legt eine komprimierte Kopie neben die Datenbank (`battbench.db-JJJJMMTT-HHMMSS.gz`), beim
+  Beenden und, solange es läuft, alle 12 Stunden. Erhalten bleiben die letzten 10 Sicherungen und dazu die neueste von
+  jedem der letzten 20 Tage, 8 Wochen und 24 Monate; das alles lässt sich in den *Einstellungen* ändern. Zum
+  Zurückspielen eine entpacken (z. B. mit 7-Zip) und `battbench.db` ersetzen, während BattBench geschlossen ist.
 - **Alte Messwerte komprimieren** (*Einstellungen*, standardmäßig an): Messwerte, die älter als zwei Wochen sind,
   werden automatisch auf einen pro Minute reduziert – pro Minute der Median von Spannung, Strom, Innenwiderstand und
   Temperatur und die letzten Zählerstände; Vorgänge und Bewertungen bleiben unverändert, nur die Kurven alter Vorgänge

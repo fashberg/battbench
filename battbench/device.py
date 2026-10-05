@@ -47,6 +47,12 @@ class Sample:
         return self.mode == 0 and self.size == 'empty'
 
 
+def res_estimated(s: Sample) -> bool:
+    """The internal resistance of this reading is only estimated by BattBench (A4 Air over USB: its 0xE4 answer,
+    'e5 …', has no resistance; it is worked out from the voltage step of a charging pause)."""
+    return (s.raw or '').startswith('e5')
+
+
 @dataclass
 class UsbInfo:
     path: bytes

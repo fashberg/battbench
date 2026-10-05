@@ -1,5 +1,6 @@
 """SQLite storage: chargers, every sample, every session (charging task) with phases and result,
 batteries and models."""
+import datetime
 import glob
 import gzip
 import itertools
@@ -11,9 +12,13 @@ import time
 from typing import List
 
 from .device import N8_MODES, Sample
-from .model import ABORTED, GAP_SECS, MIN_SECS, PHASE_MIN_MA, RUNNING, Phase, Session, Tracker
+from .model import (ABORTED, DISCHARGE, FINISHED, GAP_SECS, GRADES, MIN_SECS, PHASE_MIN_MA, RUNNING, Phase, Session,
+                    Tracker, discharge_curve)
 
-BACKUPS = 10              # gzip copies kept next to the database (ring buffer)
+# Backups: gzip copies next to the database, on exit and every `hours` (0 = only on exit). Kept: the newest `keep`,
+# plus the newest one of each of the last `daily` days, `weekly` weeks and `monthly` months (settings in the app).
+BACKUP_DEFAULTS = {'hours': 12, 'keep': 10, 'daily': 20, 'weekly': 8, 'monthly': 24}
+BACKUP_GLOB = '-????????-??????.gz'
 SAMPLE_SECS = 10          # at most one stored / plotted reading per slot in this many seconds
 
 
@@ -76,25 +81,66 @@ def thin_rows(rows, secs=SAMPLE_SECS):
     return out + th.flush()
 
 
-def close_and_backup(path, keep=BACKUPS):
-    """On exit: fold the write-ahead log into the database file, then save a gzip copy next to it
-    (<file>-YYYYMMDD-HHMMSS.gz) and keep only the newest `keep` copies. Returns the copy's path."""
+def write_backup(path, checkpoint=False):
+    """Save a gzip copy next to the database (<file>-YYYYMMDD-HHMMSS.gz) and return its path. Own connection and the
+    SQLite backup API: a consistent copy even while the app keeps writing. checkpoint: first fold the write-ahead log
+    into the database file (on exit)."""
     con = sqlite3.connect(path, timeout=10)
-    tmp = path + '.backup-tmp'
+    target = f"{path}-{time.strftime('%Y%m%d-%H%M%S')}.gz"
+    tmp = target + '.tmp'
     try:
-        con.execute('PRAGMA wal_checkpoint(TRUNCATE)')
-        out = sqlite3.connect(tmp)                     # consistent copy even if someone still writes
+        if checkpoint:
+            con.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        out = sqlite3.connect(tmp)
         con.backup(out)
         out.close()
     finally:
         con.close()
-    target = f"{path}-{time.strftime('%Y%m%d-%H%M%S')}.gz"
     with open(tmp, 'rb') as src, gzip.open(target + '.part', 'wb', compresslevel=6) as dst:
         shutil.copyfileobj(src, dst, 1 << 20)
     os.replace(target + '.part', target)
     os.remove(tmp)
-    for old in sorted(glob.glob(glob.escape(path) + '-????????-??????.gz'))[:-keep]:
-        os.remove(old)
+    return target
+
+
+def backup_files(path):
+    """The backups of the database, newest first: [(time, file)]."""
+    out = []
+    for f in glob.glob(glob.escape(path) + BACKUP_GLOB):
+        try:
+            out.append((datetime.datetime.strptime(f[-18:-3], '%Y%m%d-%H%M%S'), f))
+        except ValueError:
+            pass
+    return sorted(out, reverse=True)
+
+
+def prune_backups(path, keep=BACKUP_DEFAULTS['keep'], daily=BACKUP_DEFAULTS['daily'],
+                  weekly=BACKUP_DEFAULTS['weekly'], monthly=BACKUP_DEFAULTS['monthly']):
+    """Delete the backups no rule keeps: the newest `keep`, and the newest one of each of the last `daily` days,
+    `weekly` (ISO) weeks and `monthly` months that have a backup. Returns the deleted files."""
+    files = backup_files(path)
+    kept = {f for _t, f in files[:keep]}
+    for n, period in ((daily, lambda t: t.date()), (weekly, lambda t: t.isocalendar()[:2]),
+                      (monthly, lambda t: (t.year, t.month))):
+        seen = set()
+        for t, f in files:                                  # newest first: the first of a period is its newest
+            if period(t) not in seen:
+                if len(seen) >= n:
+                    break
+                seen.add(period(t))
+                kept.add(f)
+    gone = [f for _t, f in files if f not in kept]
+    for f in gone:
+        os.remove(f)
+    return gone
+
+
+def close_and_backup(path, policy=None):
+    """On exit: fold the write-ahead log into the database file, save a backup and delete the old ones the policy
+    (BACKUP_DEFAULTS keys) doesn't keep. Returns the backup's path."""
+    p = {**BACKUP_DEFAULTS, **(policy or {})}
+    target = write_backup(path, checkpoint=True)
+    prune_backups(path, p['keep'], p['daily'], p['weekly'], p['monthly'])
     return target
 
 
@@ -127,10 +173,12 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 """
 SESSION_FIELDS = ['id', 'slot', 'start', 'end', 'task', 'chem', 'size', 'status', 'nominal', 'label',
                   'discharge_mah', 'charge_mah', 'res_min', 'temp_max', 'grade', 'note', 'battery_id',
-                  'battery_name', 'dev', 'dev_name', 'battery_deleted', 'deleted']
+                  'battery_name', 'dev', 'dev_name', 'battery_deleted', 'deleted', 'res_first', 'res_last',
+                  'v_start', 'v_mid', 'early_drop', 'res_est', 'ohi']
 SESSION_SELECT = ('SELECT s.id, s.slot, s.start, s.end, s.task, s.chem, s.size, s.status, s.nominal, s.label, '
                   's.discharge_mah, s.charge_mah, s.res_min, s.temp_max, s.grade, s.note, s.battery_id, b.name, '
-                  's.dev, d.name, b.deleted IS NOT NULL, s.deleted '
+                  's.dev, d.name, b.deleted IS NOT NULL, s.deleted, s.res_first, s.res_last, '
+                  's.v_start, s.v_mid, s.early_drop, s.res_est, s.ohi '
                   'FROM sessions s LEFT JOIN batteries b ON b.id = s.battery_id LEFT JOIN devices d ON d.id = s.dev')
 DEVICE_FIELDS = ['id', 'key', 'model', 'name', 'slots', 'version', 'last_seen', 'alt_key']
 LEGACY_N8 = 'NXHOSTP-legacy'      # data recorded before chargers were told apart
@@ -223,6 +271,12 @@ class DB:
         if self.con.execute('PRAGMA user_version').fetchone()[0] < 10:
             self._rerate_all()
             self.con.execute('PRAGMA user_version = 10')
+        if self.con.execute('PRAGMA user_version').fetchone()[0] < 11:
+            self._health_columns()
+            self.con.execute('PRAGMA user_version = 11')
+        if self.con.execute('PRAGMA user_version').fetchone()[0] < 12:
+            self._ohi_column()
+            self.con.execute('PRAGMA user_version = 12')
         if not self.con.execute('SELECT COUNT(*) FROM models').fetchone()[0]:
             self.con.executemany('INSERT INTO models (maker,name,type,capacity) VALUES (?,?,?,?)', DEFAULT_MODELS)
         self.con.commit()
@@ -311,21 +365,41 @@ class DB:
             self.rerate(sid, commit=False)
 
     # ------------------------------------------------------------- samples
-    def resume_window(self):
-        """Start of the readings a restart rebuilds sessions from (see resume), or None: the earliest running
-        session (or one cut off by a gap during the 24 h before it), widened to every session that ends after it -
-        of all slots, since resume rebuilds them all."""
+    def _open_starts(self):
+        """Starts of the sessions a restart has to continue: running ones, and finished ones whose cell was still in
+        the slot at the last reading (a finished analysis left in the charger - otherwise the next "done" reading
+        would start a new session without battery); plus a session of the same slot cut off by a gap in the data
+        during the 24 h before."""
+        rows = self.con.execute('SELECT dev, slot, start FROM sessions WHERE status=?', (RUNNING,)).fetchall()
+        for dev, slot, start, end in self.con.execute(
+                'SELECT s.dev, s.slot, s.start, s.end FROM sessions s WHERE s.status=? AND s.start = '
+                '(SELECT MAX(start) FROM sessions WHERE dev=s.dev AND slot=s.slot)', (FINISHED,)).fetchall():
+            last = self.con.execute('SELECT t, mode FROM samples WHERE dev=? AND slot=? ORDER BY t DESC LIMIT 1',
+                                    (dev, slot)).fetchone()
+            if last and last[1] != 0 and last[0] <= end + GAP_SECS:     # still occupied when the app stopped
+                rows.append((dev, slot, start))
         cands = []
-        for dev, slot, start in self.con.execute('SELECT dev, slot, start FROM sessions WHERE status=?',
-                                                 (RUNNING,)).fetchall():
+        for dev, slot, start in rows:
             row = self.con.execute('SELECT MIN(start) FROM sessions WHERE dev=? AND slot=? AND status=? '
                                    'AND end BETWEEN ? AND ?', (dev, slot, ABORTED, start - 86400, start)).fetchone()
             cands += [t for t in (start, row[0]) if t is not None]
-        if not cands:
-            return None
-        t0 = min(cands)
-        row = self.con.execute('SELECT MIN(start) FROM sessions WHERE end >= ?', (t0 - GAP_SECS,)).fetchone()
-        return min(t0, row[0]) if row[0] is not None else t0
+        return cands
+
+    def _rebuild_from(self, t0):
+        """The readings from t0 rebuild every session that ends after t0 (- GAP_SECS) - of all slots. Widened to
+        the start of those sessions, until no further session overlaps (else a session that starts after the widened
+        start but ends before the first one would be stored a second time)."""
+        while True:
+            row = self.con.execute('SELECT MIN(start) FROM sessions WHERE end >= ?', (t0 - GAP_SECS,)).fetchone()
+            if row[0] is None or row[0] >= t0:
+                return t0
+            t0 = row[0]
+
+    def resume_window(self):
+        """Start of the readings a restart rebuilds sessions from (see resume), or None: the earliest open session
+        (_open_starts), widened by _rebuild_from."""
+        cands = self._open_starts()
+        return self._rebuild_from(min(cands)) if cands else None
 
     def compress_cutoff(self, before):
         """Never compress readings a restart rebuilds sessions from: they would come back changed (or, if short,
@@ -393,20 +467,24 @@ class DB:
 
     # ------------------------------------------------------------- sessions
     def save_session(self, s: Session):
-        grade, note = s.rating()
+        grade, note, ohi = s.rating()
+        v_mid = s.v_mid
+        if v_mid is None and s.discharge_mah and s.status != RUNNING:
+            v_mid = 0                                     # no curve to be had: rate_missing needn't try again
         vals = (s.slot, s.start, s.end, s.task, s.chem, s.size, s.status, s.nominal,
-                s.discharge_mah, s.charge_mah, s.res_first, s.res_min, s.res_last, s.temp_max, grade, note, s.dev)
+                s.discharge_mah, s.charge_mah, s.res_first, s.res_min, s.res_last, s.temp_max, grade, note, s.dev,
+                s.v_start, v_mid, None if s.early_drop is None else int(s.early_drop), int(s.res_est), ohi)
         if s.db_id is None:
             cur = self.con.execute(
                 'INSERT INTO sessions (slot,start,end,task,chem,size,status,nominal,discharge_mah,charge_mah,'
-                'res_first,res_min,res_last,temp_max,grade,note,dev) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                vals)
+                'res_first,res_min,res_last,temp_max,grade,note,dev,v_start,v_mid,early_drop,res_est,ohi) '
+                'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', vals)
             s.db_id = cur.lastrowid
         else:
             self.con.execute(
                 'UPDATE sessions SET slot=?,start=?,end=?,task=?,chem=?,size=?,status=?,nominal=?,discharge_mah=?,'
-                'charge_mah=?,res_first=?,res_min=?,res_last=?,temp_max=?,grade=?,note=?,dev=? WHERE id=?',
-                vals + (s.db_id,))
+                'charge_mah=?,res_first=?,res_min=?,res_last=?,temp_max=?,grade=?,note=?,dev=?,v_start=?,v_mid=?,'
+                'early_drop=?,res_est=?,ohi=? WHERE id=?', vals + (s.db_id,))
         self.con.execute('DELETE FROM phases WHERE session_id=?', (s.db_id,))
         self.con.executemany('INSERT INTO phases VALUES (?,?,?,?,?,?,?,?)',
                              [(s.db_id, i, p.kind, p.start, p.end, p.mah, p.mv_start, p.mv_end)
@@ -465,6 +543,52 @@ class DB:
             self.con.execute('UPDATE sessions SET nominal=? WHERE id=?', (nominal, session_id))
         self.con.commit()
 
+    def _health_columns(self):
+        """Version 11: health index (model.health). Sessions keep the voltage curve of their last discharge
+        (v_start / v_mid in mV, early_drop) and whether the internal resistance was only estimated (res_est); the
+        values are worked out from the stored readings by rate_missing() and all sessions are rated anew."""
+        cols = [r[1] for r in self.con.execute('PRAGMA table_info(sessions)')]
+        for col, typ in (('v_start', 'INTEGER'), ('v_mid', 'INTEGER'), ('early_drop', 'INTEGER'),
+                         ('res_est', 'INTEGER DEFAULT 0')):
+            if col not in cols:
+                self.con.execute(f'ALTER TABLE sessions ADD COLUMN {col} {typ}')
+        self.rate_missing()
+        for (sid,) in self.con.execute('SELECT id FROM sessions').fetchall():
+            self.rerate(sid, commit=False)
+
+    def _ohi_column(self):
+        """Version 12: the health index itself is stored (sessions.ohi) - tables show and sort by it."""
+        if 'ohi' not in [r[1] for r in self.con.execute('PRAGMA table_info(sessions)')]:
+            self.con.execute('ALTER TABLE sessions ADD COLUMN ohi INTEGER')
+        for (sid,) in self.con.execute('SELECT id FROM sessions').fetchall():
+            self.rerate(sid, commit=False)
+
+    def rate_missing(self):
+        """At start: finished sessions with a discharge but without its voltage curve (measured before the health
+        index, or the app was closed meanwhile) get it from the stored readings and are rated anew; so do sessions
+        with a rating from an older version. v_mid = 0: no curve to be had (too short, readings gone)."""
+        todo = self.con.execute('SELECT id, dev, slot, start, end FROM sessions WHERE discharge_mah IS NOT NULL '
+                                'AND v_mid IS NULL AND status != ?', (RUNNING,)).fetchall()
+        for sid, dev, slot, start, end in todo:
+            dis = [p for p in self.phases(sid) if p[0] == DISCHARGE and p[2] > p[1]]
+            c = None
+            if dis:
+                _kind, a, b, _mah = dis[-1]
+                c = discharge_curve(self.con.execute('SELECT t, mv, ma FROM samples WHERE dev=? AND slot=? '
+                                                     'AND t BETWEEN ? AND ? ORDER BY t', (dev, slot, a, b)).fetchall())
+            est = self.con.execute("SELECT 1 FROM samples WHERE dev=? AND slot=? AND t BETWEEN ? AND ? AND res > 0 "
+                                   "AND raw LIKE 'e5%' LIMIT 1", (dev, slot, start, end)).fetchone()
+            self.con.execute('UPDATE sessions SET v_start=?, v_mid=?, early_drop=?, res_est=? WHERE id=?',
+                             (c['v_start'] if c else None, c['v_mid'] if c else 0,
+                              int(c['early_drop']) if c else None, int(bool(est)), sid))
+            self.rerate(sid, commit=False)
+        old = self.con.execute(f"SELECT id FROM sessions WHERE grade IS NOT NULL AND grade != '–' AND grade NOT IN "
+                               f"({','.join('?' * len(GRADES))})", GRADES).fetchall()
+        for (sid,) in old:
+            self.rerate(sid, commit=False)
+        self.con.commit()
+        return len(todo) + len(old)
+
     def _rerate_all(self):
         """Version 10: a poor internal resistance caps the rating at good, and a last phase of a single reading (probe
         pulse when a cell is taken out of an A4 Air) is dropped - it took the charge counter as a discharge capacity.
@@ -479,15 +603,21 @@ class DB:
 
     def rerate(self, session_id, commit=True):
         """Recompute capacities and grade (e.g. after the nominal capacity was changed)."""
+        cols = [r[1] for r in self.con.execute('PRAGMA table_info(sessions)')]
+        curve = ',v_start,v_mid,early_drop,res_est' if 'v_mid' in cols else ''     # before version 11: not yet
         row = self.con.execute('SELECT slot,start,end,task,chem,size,status,nominal,res_first,res_min,'
-                               'res_last,temp_max FROM sessions WHERE id=?', (session_id,)).fetchone()
+                               'res_last,temp_max' + curve + ' FROM sessions WHERE id=?', (session_id,)).fetchone()
         s = Session(slot=row[0], start=row[1], end=row[2], task=row[3], chem=row[4], size=row[5],
                     status=row[6], nominal=row[7], res_first=row[8], res_min=row[9], res_last=row[10],
                     temp_max=row[11], db_id=session_id)
+        if curve:
+            s.v_start, s.v_mid, s.early_drop, s.res_est = row[12], row[13], row[14], bool(row[15])
         s.phases = [Phase(kind=k, start=a, end=b, mah=m) for k, a, b, m in self.phases(session_id)]
-        grade, note = s.rating()
+        grade, note, ohi = s.rating()
         self.con.execute('UPDATE sessions SET grade=?, note=?, discharge_mah=?, charge_mah=? WHERE id=?',
                          (grade, note, s.discharge_mah, s.charge_mah, session_id))
+        if 'ohi' in cols:                                 # from version 12
+            self.con.execute('UPDATE sessions SET ohi=? WHERE id=?', (ohi, session_id))
         if commit:
             self.con.commit()
 
@@ -505,8 +635,8 @@ class DB:
     # ------------------------------------------------------------- batteries
     def batteries(self, deleted=False):
         """All batteries with number of sessions, the latest measured discharge capacity / grade, the model
-        (id, maker, name), the end of the last measurement (session with a discharge capacity) / last charge and
-        the time it was deleted (None). deleted: include soft-deleted batteries."""
+        (id, maker, name), the end of the last measurement (session with a discharge capacity) / last charge,
+        the time it was deleted (None) and the health index of the last measurement. deleted: include soft-deleted batteries."""
         return self.con.execute(
             'SELECT b.id, b.name, b.maker, b.capacity, b.type, b.description, '
             ' (SELECT COUNT(*) FROM sessions s WHERE s.battery_id=b.id AND s.deleted IS NULL), '
@@ -517,7 +647,9 @@ class DB:
             ' b.model_id, m.maker, m.name, '
             ' (SELECT MAX(s.end) FROM sessions s WHERE s.battery_id=b.id AND s.discharge_mah > 0 AND s.deleted IS NULL), '
             ' (SELECT MAX(s.end) FROM sessions s WHERE s.battery_id=b.id AND s.charge_mah > 0 AND s.deleted IS NULL), '
-            ' b.deleted '
+            ' b.deleted, '
+            ' (SELECT s.ohi FROM sessions s WHERE s.battery_id=b.id AND s.discharge_mah > 0 AND s.deleted IS NULL '
+            '  ORDER BY s.start DESC LIMIT 1) '
             'FROM batteries b LEFT JOIN models m ON m.id = b.model_id '
             + ('' if deleted else 'WHERE b.deleted IS NULL ') + 'ORDER BY b.id').fetchall()
 
@@ -697,24 +829,17 @@ class DB:
 
     # ------------------------------------------------------------- resume
     def resume(self, tracker: Tracker, since=None):
-        """Rebuild running sessions (and everything after `since`) from the stored samples, so a
-        restart of the app continues the open charging tasks instead of starting new ones.
-        Sessions of the same slot that were cut off by a gap in the data during the 24 h before are
-        rebuilt as well (they are joined again if the task kept running, see Tracker._continues).
+        """Rebuild the open sessions (_open_starts: running, or finished with the cell still in the slot) and
+        everything after `since` from the stored samples, so a restart of the app continues them instead of
+        starting new ones. Sessions of the same slot that were cut off by a gap in the data during the 24 h before
+        are rebuilt as well (they are joined again if the task kept running, see Tracker._continues).
         Label, nominal capacity and battery entered by the user are kept."""
-        cands = [since] if since is not None else []
-        for dev, slot, start in self.con.execute('SELECT dev, slot, start FROM sessions WHERE status=?',
-                                                 (RUNNING,)).fetchall():
-            row = self.con.execute('SELECT MIN(start) FROM sessions WHERE dev=? AND slot=? AND status=? '
-                                   'AND end BETWEEN ? AND ?', (dev, slot, ABORTED, start - 86400, start)).fetchone()
-            cands += [t for t in (start, row[0]) if t is not None]
+        cands = ([since] if since is not None else []) + self._open_starts()
         if not cands:
             return
-        t0 = min(cands)
+        t0 = self._rebuild_from(min(cands))
         old = self.con.execute('SELECT id, dev, slot, start, nominal, label, battery_id, deleted FROM sessions '
                                'WHERE end >= ?', (t0 - GAP_SECS,)).fetchall()
-        if old:
-            t0 = min(t0, min(r[3] for r in old))
         meta = {(r[1], r[2], round(r[3])): (r[4], r[5], r[6], r[7]) for r in old}
         for r in old:
             self.con.execute('DELETE FROM phases WHERE session_id=?', (r[0],))
