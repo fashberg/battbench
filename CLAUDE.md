@@ -68,8 +68,13 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
 - **Only read-only commands** go to the chargers (ISDT: `0xE0`, `0xDE`, `0xE4`, `0xFE 00`; SkyRC: status queries).
   Commands like `57` / `74` / `65` and `FE` other than `FE 00` restart or stop running tasks.
 - Settings: `QSettings('battbench', 'battbench')` keys `a4`, `lang`, `show_deleted`, `compress`, `hidden_series`.
-  Window position / size and splitter positions are stored in the database (`settings` table, `save_layout` /
-  `restore_layout`); a window not completely on a screen is reset to the default size.
+  Window position / size, splitter positions and column widths the user dragged (`cols_<table>`, see
+  `MainWindow.width_tables`) are stored in the database (`settings` table, `save_layout` / `restore_layout`); a window
+  not completely on a screen is reset to the default size. Columns are `Interactive` and fitted to the contents after
+  each refill (`make_table`) until the user drags one.
+- **Shortcuts**: two visible tables with the same `WidgetShortcut` keys (Enter / Del) make them ambiguous for Qt and
+  none fires. Side by side tables (tab *Batteries*) use `row_menu(..., keys=False)` and one shortcut for the tab that
+  acts on the table with the focus.
 - **Version** `battbench/__init__.py` `__version__`: year.month (`2026.10`), bug fixes `2026.10.1`. `version.git_info()`
   adds the commit (from git, or from `battbench/_build.py` written by `build.ps1`). Author: Folke Ashberg,
   www.ashberg.de.

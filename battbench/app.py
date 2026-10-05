@@ -1907,9 +1907,52 @@ def make_table(headers, autofilter=False, stretch=True):
     t.setEditTriggers(QAbstractItemView.NoEditTriggers)
     t.setSelectionBehavior(QAbstractItemView.SelectRows)
     t.setSelectionMode(QAbstractItemView.SingleSelection)
-    t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-    t.horizontalHeader().setStretchLastSection(stretch)
+    header = t.horizontalHeader()
+    header.setSectionResizeMode(QHeaderView.Interactive)       # the user can drag the column widths
+    header.setStretchLastSection(stretch)
+    # Widths follow the contents (measured once after a refill) until the user drags a column; from then on the
+    # table keeps the user's widths, they are stored with the layout (MainWindow.save_layout).
+    t.user_widths = False
+    t.fitting = False
+    t.header_drag = HeaderDrag(header.viewport())
+    t.fit_timer = QTimer(t)
+    t.fit_timer.setSingleShot(True)
+    t.fit_timer.timeout.connect(lambda: fit_columns(t))
+    m = t.model()
+    for sig in (m.dataChanged, m.rowsInserted, m.rowsRemoved, m.modelReset):
+        sig.connect(lambda *_: t.fit_timer.start(0))
+    header.sectionResized.connect(lambda *_: _user_resized(t))
     return t
+
+
+def fit_columns(t):
+    if not t.user_widths:
+        t.fitting = True
+        t.resizeColumnsToContents()
+        t.fitting = False
+
+
+class HeaderDrag(QObject):
+    """Watches a header: is a mouse button held down on it (the user drags a column border)?"""
+
+    def __init__(self, viewport):
+        super().__init__(viewport)
+        self.pressed = False
+        viewport.installEventFilter(self)
+
+    def eventFilter(self, obj, e):
+        if e.type() == QEvent.MouseButtonPress:
+            self.pressed = True
+        elif e.type() == QEvent.MouseButtonRelease:
+            self.pressed = False
+        return False
+
+
+def _user_resized(t):
+    """A column was resized: by the user if it happens while the mouse is pressed on the header (not by
+    fit_columns, a refill or a window resize)."""
+    if not t.fitting and t.header_drag.pressed:
+        t.user_widths = True
 
 
 def show_deleted():
@@ -1959,12 +2002,13 @@ def selected_ids(table):
     return [table.item(r, 0).data(Qt.UserRole) for r in rows if not table.isRowHidden(r)]
 
 
-def row_menu(table, edit, delete, enter=None):
+def row_menu(table, edit, delete, enter=None, keys=True):
     """Right click on a row: Edit … (if edit is given) / Delete; with several rows selected (Ctrl / Shift) only
-    Delete. Keys: Enter = enter (default: edit, one row selected), Del = delete."""
+    Delete. Keys: Enter = enter (default: edit, one row selected), Del = delete. keys=False: the caller handles the
+    keys - two visible tables with the same shortcuts make them ambiguous for Qt, then none of them fires."""
     table.setContextMenuPolicy(Qt.CustomContextMenu)
     enter = enter or (lambda: edit() if len(selected_ids(table)) == 1 else None)
-    for key, fn in ((Qt.Key_Return, enter), (Qt.Key_Enter, enter), (Qt.Key_Delete, delete)):
+    for key, fn in ((Qt.Key_Return, enter), (Qt.Key_Enter, enter), (Qt.Key_Delete, delete)) if keys else ():
         QShortcut(QKeySequence(key), table, fn, context=Qt.WidgetShortcut)
 
     def show(pos):
@@ -1993,18 +2037,15 @@ def select_by_id(table, ident):
 
 def fill_session_table(table, rows, cols):
     """rows from DB.sessions() / DB.battery_sessions(); cols: column keys (see session_headers)."""
-    # ResizeToContents measures all rows again on every setItem of a shown table: refilling 500 sessions
-    # took 77 s and froze the GUI. Measure once at the end instead.
-    # Sorting is switched off while filling as well, otherwise rows move between the setItem calls.
-    header = table.horizontalHeader()
-    header.setSectionResizeMode(QHeaderView.Interactive)
+    # Columns are Interactive (never ResizeToContents: that measures all rows again on every setItem, refilling
+    # 500 sessions took 77 s); make_table fits them once after the refill.
+    # Sorting is switched off while filling, otherwise rows move between the setItem calls.
     sorting = table.isSortingEnabled()
     table.setSortingEnabled(False)
     try:
         _fill_session_rows(table, rows, cols)
     finally:
         table.setSortingEnabled(sorting)
-        header.setSectionResizeMode(QHeaderView.ResizeToContents)
     if table.autofilter:
         table.autofilter.apply()
 
@@ -2059,6 +2100,7 @@ class BatteryTab(QWidget):
     open_session = Signal(int)
     changed = Signal(int)                 # battery id added/edited, -1 = deleted
     models_changed = Signal(list)         # a model was added/edited: ids of its batteries
+    sessions_deleted = Signal()           # sessions deleted from the history
     HIST_COLS = ['start', 'dev', 'slot', 'task', 'status', 'dis', 'pct', 'chg', 'rmin', 'tmax', 'grade', 'dur']
 
     def __init__(self, db: DB):
@@ -2094,7 +2136,7 @@ class BatteryTab(QWidget):
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)      # Ctrl / Shift: several, to delete
         self.table.itemSelectionChanged.connect(self.show_history)
         self.table.cellDoubleClicked.connect(lambda *_: self.edit())
-        row_menu(self.table, self.edit, self.delete)
+        row_menu(self.table, self.edit, self.delete, keys=False)
         left.addWidget(self.table)
         self.split.addWidget(lw)
         rw = QWidget()
@@ -2105,8 +2147,14 @@ class BatteryTab(QWidget):
         heads = session_headers()
         self.hist = make_table([heads[c] for c in self.HIST_COLS], autofilter=True, stretch=False)
         self.hist.sortByColumn(0, Qt.DescendingOrder)
+        self.hist.setSelectionMode(QAbstractItemView.ExtendedSelection)      # Ctrl / Shift: several, to delete
         self.hist.cellDoubleClicked.connect(
             lambda r, _c: self.open_session.emit(self.hist.item(r, 0).data(Qt.UserRole)))
+        row_menu(self.hist, None, self.delete_sessions, keys=False)
+        # Enter / Del: for the battery list or the history, whichever has the focus
+        for key, fn in ((Qt.Key_Return, self._enter_key), (Qt.Key_Enter, self._enter_key),
+                        (Qt.Key_Delete, self._delete_key)):
+            QShortcut(QKeySequence(key), self, fn, context=Qt.WidgetWithChildrenShortcut)
         right.addWidget(self.hist)
         self.split.addWidget(rw)
         self.split.setSizes([600, 400])
@@ -2171,6 +2219,25 @@ class BatteryTab(QWidget):
                 self.table.scrollToItem(self.table.item(r, 0))
                 return
 
+    def show_session(self, bid, sid):
+        """Select the battery and, in its history, the session."""
+        self.show_battery(bid)
+        select_by_id(self.hist, sid)
+        r = self.hist.currentRow()
+        if r >= 0:
+            self.hist.scrollToItem(self.hist.item(r, 0))
+
+    def filter_model(self, mid):
+        """Only the batteries of this model (column filters on maker and model; search cleared)."""
+        m = self.db.model(mid)
+        if not m:
+            return
+        self.search.clear()
+        af = self.table.autofilter
+        af.filters.clear()
+        af.filters.update({1: {m['maker']}, 2: {m['name']}})
+        af.apply()
+
     def _matches(self, row):
         """Search field: every word in ID, maker, model, type, description or name."""
         words = self.search.text().lower().split()
@@ -2190,6 +2257,26 @@ class BatteryTab(QWidget):
                                                          '</b> ' + tr('(choose a battery)')))
         fill_session_table(self.hist, self.db.battery_sessions(bid, deleted=show_deleted()) if b else [],
                            self.HIST_COLS)
+
+    def _enter_key(self):
+        """Battery list: edit the battery; history: open the session."""
+        table = self.hist if self.hist.hasFocus() else self.table if self.table.hasFocus() else None
+        ids = selected_ids(table) if table else []
+        if len(ids) == 1:
+            self.open_session.emit(ids[0]) if table is self.hist else self.edit()
+
+    def _delete_key(self):
+        if self.hist.hasFocus():
+            self.delete_sessions()
+        elif self.table.hasFocus():
+            self.delete()
+
+    def delete_sessions(self):
+        """Selected sessions of the history: soft delete (already deleted ones for good)."""
+        if delete_rows(self, self.hist, (tr('session'), tr('sessions')), self.db.delete_sessions,
+                       self.db.hard_delete_sessions):
+            self.load()
+            self.sessions_deleted.emit()
 
     def _run(self, dlg):
         ok = dlg.exec()
@@ -2221,6 +2308,7 @@ class ModelTab(QWidget):
     """Maker / model list (add / edit / delete, search). The capacity of a model is the nominal
     capacity of all its batteries."""
     changed = Signal(list)                # ids of batteries whose values came from an edited model
+    show_batteries = Signal(int)          # click on the battery count: show the batteries of this model
 
     def __init__(self, db: DB):
         super().__init__()
@@ -2249,9 +2337,14 @@ class ModelTab(QWidget):
         self.table.itemSelectionChanged.connect(
             lambda: self.edit_btn.setEnabled(len(selected_ids(self.table)) <= 1))
         self.table.cellDoubleClicked.connect(lambda *_: self.edit())
+        self.table.cellClicked.connect(self._clicked)
         row_menu(self.table, self.edit, self.delete)
         lay.addWidget(self.table)
         self.load()
+
+    def _clicked(self, row, col):
+        if col == 4 and self.table.item(row, 4).data(SORT_ROLE):          # number of batteries
+            self.show_batteries.emit(self.table.item(row, 0).data(Qt.UserRole))
 
     def selected(self):
         r = self.table.currentRow()
@@ -2838,14 +2931,17 @@ class MainWindow(QMainWindow):
         row_menu(self.table, None, self.delete_sessions, enter=self.result.battery.setFocus)
         self.table.currentCellChanged.connect(self._row_changed)    # click or arrow keys
         self.table.cellClicked.connect(self._row_clicked)           # same row again (e.g. after a slot view)
+        self.table.cellDoubleClicked.connect(self._row_double_clicked)
         self.tabs.addTab(self.table, tr('Sessions'))
         self.btab = BatteryTab(self.db)
         self.btab.open_session.connect(self.open_session)
         self.btab.changed.connect(self.battery_changed)
         self.btab.models_changed.connect(self.models_changed)
+        self.btab.sessions_deleted.connect(lambda: (self.load_tables(), self.stab.refresh_stats()))
         self.tabs.addTab(self.btab, tr('Batteries'))
         self.mtab = ModelTab(self.db)
         self.mtab.changed.connect(self.models_changed)
+        self.mtab.show_batteries.connect(self.show_model_batteries)
         self.tabs.addTab(self.mtab, tr('Models'))
         self.dtab = DeviceTab(self.db)
         self.dtab.changed.connect(self.devices_renamed)
@@ -3080,6 +3176,17 @@ class MainWindow(QMainWindow):
         self.row_sid = self.table.item(row, 0).data(Qt.UserRole)
         self.open_session(self.row_sid)
 
+    def _row_double_clicked(self, row, col):
+        """Double click on the battery of a session: tab Batteries with that battery and the session."""
+        bid = self.table.item(row, col).data(SORT_ROLE) if self.COLS[col] == 'battery' else None
+        if bid is not None:
+            self.tabs.setCurrentWidget(self.btab)
+            self.btab.show_session(bid, self.table.item(row, 0).data(Qt.UserRole))
+
+    def show_model_batteries(self, mid):
+        self.tabs.setCurrentWidget(self.btab)
+        self.btab.filter_model(mid)
+
     def _tile_clicked(self, key):
         self.row_sid = None
         self.select_slot(key)
@@ -3194,6 +3301,9 @@ class MainWindow(QMainWindow):
         self.db.set_setting('window', f'{g.x()},{g.y()},{g.width()},{g.height()},{int(self.isMaximized())}')
         self.db.set_setting('split_v', ','.join(map(str, self.vsplit.sizes())))
         self.db.set_setting('split_h', ','.join(map(str, self.hsplit.sizes())))
+        for key, t in self.width_tables().items():
+            if t.user_widths:
+                self.db.set_setting('cols_' + key, ','.join(str(t.columnWidth(c)) for c in range(t.columnCount())))
         if self.btab.shown_once:
             self.db.set_setting('split_bat', ','.join(map(str, self.btab.split.sizes())))
 
@@ -3221,6 +3331,20 @@ class MainWindow(QMainWindow):
                 continue
             if len(sizes) == split.count() and all(x >= 0 for x in sizes) and sum(sizes) > 0:
                 split.setSizes(sizes)
+        for key, t in self.width_tables().items():
+            try:
+                widths = [int(x) for x in (self.db.setting('cols_' + key) or '').split(',')]
+            except ValueError:
+                continue
+            if len(widths) == t.columnCount() and all(x > 0 for x in widths):
+                t.user_widths = True
+                for c, x in enumerate(widths):
+                    t.setColumnWidth(c, x)
+
+    def width_tables(self):
+        """Tables whose column widths the user may set (stored as setting 'cols_<key>')."""
+        return {'sessions': self.table, 'batteries': self.btab.table, 'history': self.btab.hist,
+                'models': self.mtab.table, 'chargers': self.dtab.table}
 
     def closeEvent(self, e):
         try:
