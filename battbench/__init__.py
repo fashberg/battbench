@@ -1,2 +1,2 @@
 """BattBench: battery test bench – tracking and analysis of rechargeable batteries with ISDT and SkyRC chargers."""
-__version__ = '2026.10.6'         # year.month[.bugfix], see version.py
+__version__ = '2026.10.7'         # year.month[.bugfix], see version.py
