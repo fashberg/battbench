@@ -218,7 +218,8 @@ MC3000 and Maha MH-C9000.
   Right click zooms out; the house symbol (bottom left) shows everything again. The last discharge shows its plateau
   (20–80 %) shaded darker, with the average voltage there (dashed) and the voltage after 5 % (dot).
 - **Tables** (bottom): click a column title to sort; the funnel in a column title filters like a spreadsheet.
-  *Sessions* lists all sessions, *Batteries* your batteries with their history on the right, *Models* the model list,
+  *Sessions* lists all sessions, *Batteries* your batteries with their history on the right (clicking a battery shows
+  its latest session in the chart, clicking a session in the history shows that one), *Models* the model list,
   *Chargers* the known chargers (rename them here – the name is stored only in BattBench).
 - **Keys in the tables**: arrow keys move, Enter edits a battery / model (in *Sessions*: jumps to the battery
   field), Del deletes.

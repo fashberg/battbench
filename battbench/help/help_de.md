@@ -155,7 +155,8 @@ MC3000 und Maha MH-C9000.
   (unten links) zeigt wieder alles. Bei der letzten Entladung ist das Plateau (20–80 %) dunkler hinterlegt, mit der
   mittleren Spannung dort (gestrichelt) und der Spannung nach 5 % (Punkt).
 - **Tabellen** (unten): Klick auf einen Spaltentitel sortiert; der Trichter im Spaltentitel filtert wie in einer
-  Tabellenkalkulation. *Vorgänge* listet alle Vorgänge, *Akkus* deine Akkus mit ihrem Verlauf rechts, *Modelle* die
+  Tabellenkalkulation. *Vorgänge* listet alle Vorgänge, *Akkus* deine Akkus mit ihrem Verlauf rechts (ein Klick auf
+  einen Akku zeigt seinen letzten Vorgang im Diagramm, ein Klick auf einen Vorgang im Verlauf diesen), *Modelle* die
   Modellliste, *Ladegeräte* die bekannten Ladegeräte (hier umbenennen – der Name wird nur in BattBench gespeichert).
 - **Tasten in den Tabellen**: Pfeiltasten bewegen, Enter bearbeitet einen Akku / ein Modell (bei *Vorgänge*: springt
   ins Akku-Feld), Entf löscht.

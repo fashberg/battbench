@@ -2288,7 +2288,7 @@ class BatteryTab(QWidget):
         self.table.autofilter.header.desc_first = {5, 7, 8, 9}   # first click: highest first (count, rating, dates)
         self.table.sortByColumn(0, Qt.AscendingOrder)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)      # Ctrl / Shift: several, to delete
-        self.table.itemSelectionChanged.connect(self.show_history)
+        self.table.itemSelectionChanged.connect(self._battery_picked)
         self.table.cellDoubleClicked.connect(lambda *_: self.edit())
         row_menu(self.table, self.edit, self.delete, keys=False)
         left.addWidget(self.table)
@@ -2303,8 +2303,9 @@ class BatteryTab(QWidget):
         self.hist.autofilter.header.desc_first = {self.HIST_COLS.index('grade')}     # best first
         self.hist.sortByColumn(0, Qt.DescendingOrder)
         self.hist.setSelectionMode(QAbstractItemView.ExtendedSelection)      # Ctrl / Shift: several, to delete
-        self.hist.cellDoubleClicked.connect(
-            lambda r, _c: self.open_session.emit(self.hist.item(r, 0).data(Qt.UserRole)))
+        # a click (or arrow key) on a session shows it at once; a click on the same row again too
+        self.hist.currentCellChanged.connect(lambda r, _c, pr, _pc: self._open_hist_row(r) if r != pr else None)
+        self.hist.cellClicked.connect(lambda r, _c: self._open_hist_row(r))
         row_menu(self.hist, None, self.delete_sessions, keys=False)
         # Enter / Del: for the battery list or the history, whichever has the focus
         for key, fn in ((Qt.Key_Return, self._enter_key), (Qt.Key_Enter, self._enter_key),
@@ -2406,14 +2407,36 @@ class BatteryTab(QWidget):
         self.table.autofilter.apply()
 
     def show_history(self):
+        """Fill the history of the selected battery; a session selected there stays selected (refills)."""
         ids = selected_ids(self.table)
         self.edit_btn.setEnabled(len(ids) <= 1)
         bid = ids[0] if len(ids) == 1 else None
         b = self.db.battery(bid) if bid is not None else None
         self.hist_title.setText('<b>' + tr('History') + (f" #{b['id']} {b['name']}</b>" if b else
                                                          '</b> ' + tr('(choose a battery)')))
+        keep = selected_ids(self.hist)
+        self.hist.blockSignals(True)              # refilling / reselecting must not open a session
         fill_session_table(self.hist, self.db.battery_sessions(bid, deleted=show_deleted()) if b else [],
                            self.HIST_COLS)
+        if keep:
+            select_by_id(self.hist, keep[0])
+        self.hist.blockSignals(False)
+
+    def _battery_picked(self):
+        """A battery chosen in the list: its history, and its latest session shown at once (chart and result)."""
+        self.hist.clearSelection()
+        self.show_history()
+        rows = [r for r in range(self.hist.rowCount()) if not self.hist.isRowHidden(r)]
+        if len(selected_ids(self.table)) == 1 and rows:
+            latest = max(rows, key=lambda r: self.hist.item(r, 0).data(SORT_ROLE))   # column 0: start
+            self.hist.blockSignals(True)
+            self.hist.selectRow(latest)
+            self.hist.blockSignals(False)
+            self._open_hist_row(latest)
+
+    def _open_hist_row(self, row):
+        if row >= 0 and self.hist.item(row, 0) is not None:
+            self.open_session.emit(self.hist.item(row, 0).data(Qt.UserRole))
 
     def _enter_key(self):
         """Battery list: edit the battery; history: open the session."""
