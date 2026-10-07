@@ -195,7 +195,7 @@ def score_resistance(res, chem):
 
 def score_efficiency(eta):
     """Charge efficiency (discharge / charge after it, %) -> 0..100. 75-85 % is normal for NiMH; less means
-    losses (heat), more a charge that may have ended early."""
+    losses (heat), more means a charge that may have ended early."""
     if 75 <= eta <= 85:
         return 100
     if 65 <= eta < 75:

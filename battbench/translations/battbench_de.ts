@@ -308,10 +308,6 @@
         <translation>Ladekapazität</translation>
     </message>
     <message>
-        <source>Charge efficiency</source>
-        <translation>Ladeeffizienz</translation>
-    </message>
-    <message>
         <source>Voltage under load</source>
         <translation>Spannung unter Last</translation>
     </message>
@@ -400,12 +396,8 @@
         <translation>der Vorgang wurde abgebrochen, durch einen anderen ersetzt, oder die Daten brachen ab</translation>
     </message>
     <message>
-        <source>&lt;p&gt;The capacity the battery delivered during the (last) discharge, measured by the charger. Compared with the nominal capacity it gives the rating: a healthy cell reaches 80 % or more.&lt;/p&gt;</source>
-        <translation>&lt;p&gt;Die Kapazität, die der Akku bei der (letzten) Entladung abgegeben hat, gemessen vom Ladegerät. Im Vergleich zur Nennkapazität ergibt sie die Bewertung: Ein gesunder Akku erreicht 80 % oder mehr.&lt;/p&gt;</translation>
-    </message>
-    <message>
-        <source>&lt;p&gt;The charge put into the battery after the discharge (or during a plain charge). It is higher than the discharge capacity because charging has losses; discharge ÷ charge is the charge efficiency, typically 70–90 % for NiMH.&lt;/p&gt;</source>
-        <translation>&lt;p&gt;Die Ladung, die nach der Entladung (oder bei reinem Laden) in den Akku geflossen ist. Sie ist höher als die Entladekapazität, weil Laden Verluste hat; Entladung ÷ Ladung ist der Ladewirkungsgrad, bei NiMH typisch 70–90 %.&lt;/p&gt;</translation>
+        <source>&lt;p&gt;The charge put into the battery after the discharge (or during a plain charge). In brackets the charge efficiency, discharge ÷ charge: 75–85 % is normal for NiMH; less means losses (heat, self-discharge), more means a charge that may have ended early. It is shown once the charge after the discharge is finished.&lt;/p&gt;</source>
+        <translation>&lt;p&gt;Die Ladung, die nach der Entladung (oder bei einem reinen Ladevorgang) eingeladen wurde. In Klammern die Ladeeffizienz, Entladung ÷ Ladung: 75–85 % sind für NiMH normal; weniger heißt Verluste (Wärme, Selbstentladung), mehr heißt eine möglicherweise zu früh beendete Ladung. Sie erscheint, sobald die Ladung nach der Entladung fertig ist.&lt;/p&gt;</translation>
     </message>
     <message>
         <source>&lt;p&gt;The internal resistance as the charger measures it – &lt;b&gt;lower is better&lt;/b&gt;. It rises with age and wear; a high value lets the voltage drop under load, so the device switches off earlier. &quot;min.&quot; is the lowest value of the session, first and last are the values at its start and end.&lt;/p&gt;</source>
@@ -418,10 +410,6 @@
     <message>
         <source>&lt;p&gt;What the cell is still good for, from its category: A high drain (flash units, RC models), B medium drain (LED torches, mice), C low drain (remote controls, clocks), D recycle.&lt;/p&gt;</source>
         <translation>&lt;p&gt;Wofür der Akku noch taugt, nach seiner Kategorie: A hohe Last (Blitzgeräte, RC-Modelle), B mittlere Last (LED-Taschenlampen, Mäuse), C geringe Last (Fernbedienungen, Uhren), D Recycling.&lt;/p&gt;</translation>
-    </message>
-    <message>
-        <source>&lt;p&gt;Discharge capacity ÷ the charge put in after it. 75–85 % is normal for NiMH; less means losses (heat, self-discharge), more a charge that may have ended early. It counts once the charge after the discharge is finished.&lt;/p&gt;</source>
-        <translation>&lt;p&gt;Entladekapazität ÷ die danach eingeladene Ladung. 75–85 % sind für NiMH normal; weniger heißt Verluste (Wärme, Selbstentladung), mehr eine möglicherweise zu früh beendete Ladung. Sie zählt, sobald die Ladung nach der Entladung fertig ist.&lt;/p&gt;</translation>
     </message>
     <message>
         <source>&lt;p&gt;The voltage while discharging: after 5 % of the discharge, and the average from 20 to 80 % (the plateau, shaded darker in the chart). A healthy NiMH cell stays above 1.15 V and 1.20 V at a discharge current of about 0.2 C; falling below 1.0 V before 80 % is an early drop.&lt;/p&gt;</source>
@@ -446,6 +434,10 @@
     <message>
         <source>– special battery without a model (enter values by hand) –</source>
         <translation>– Spezialakku ohne Modell (Werte von Hand eingeben) –</translation>
+    </message>
+    <message>
+        <source>&lt;p&gt;The capacity the battery delivered during the (last) discharge, measured by the charger; in brackets in % of the nominal capacity. It is the largest part of the health index: from 90 % the capacity score is full, below 70 % the cell is rated D.&lt;/p&gt;</source>
+        <translation>&lt;p&gt;Die Kapazität, die der Akku bei der (letzten) Entladung abgegeben hat, gemessen vom Ladegerät; in Klammern in % der Nennkapazität. Sie ist der größte Teil des Gesundheitsindex: ab 90 % ist die Kapazitäts-Teilnote voll, unter 70 % gilt der Akku als D.&lt;/p&gt;</translation>
     </message>
     <message>
         <source>No session in this slot</source>
@@ -670,10 +662,6 @@
     <message>
         <source>{} of 100</source>
         <translation>{} von 100</translation>
-    </message>
-    <message>
-        <source>when the charge is finished</source>
-        <translation>sobald die Ladung fertig ist</translation>
     </message>
     <message>
         <source>{} V after 5 %</source>

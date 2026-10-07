@@ -1709,7 +1709,6 @@ class ResultPanel(QWidget):
         for k, name in [('task', tr('Task')), ('status', tr('Status')), ('type', tr('Detected')), ('time', tr('Time')),
                         ('health', tr('Health index')), ('use', tr('Suited for')),
                         ('dis', tr('Discharge capacity')), ('chg', tr('Charge capacity')),
-                        ('eta', tr('Charge efficiency')),
                         ('res', tr('Internal resistance')), ('volt', tr('Voltage under load')),
                         ('temp', tr('Max. temperature'))]:
             self.f[k] = QLabel('')
@@ -1866,12 +1865,13 @@ class ResultPanel(QWidget):
                 (FINISHED, tr('the charger has finished the task')),
                 (REMOVED, tr('the battery was taken out before the task was finished')),
                 (ABORTED, tr('the task was stopped or replaced by another one, or the data broke off'))]),
-            'dis': tr('<p>The capacity the battery delivered during the (last) discharge, measured by the charger. '
-                      'Compared with the nominal capacity it gives the rating: a healthy cell reaches 80 % or '
-                      'more.</p>'),
-            'chg': tr('<p>The charge put into the battery after the discharge (or during a plain charge). It is '
-                      'higher than the discharge capacity because charging has losses; discharge ÷ charge is the '
-                      'charge efficiency, typically 70–90 % for NiMH.</p>'),
+            'dis': tr('<p>The capacity the battery delivered during the (last) discharge, measured by the charger; '
+                      'in brackets in % of the nominal capacity. It is the largest part of the health index: from '
+                      '90 % the capacity score is full, below 70 % the cell is rated D.</p>'),
+            'chg': tr('<p>The charge put into the battery after the discharge (or during a plain charge). In '
+                      'brackets the charge efficiency, discharge ÷ charge: 75–85 % is normal for NiMH; less means '
+                      'losses (heat, self-discharge), more means a charge that may have ended early. It is shown '
+                      'once the charge after the discharge is finished.</p>'),
             'res': tr('<p>The internal resistance as the charger measures it – <b>lower is better</b>. It rises with '
                       'age and wear; a high value lets the voltage drop under load, so the device switches off '
                       'earlier. "min." is the lowest value of the session, first and last are the values at its '
@@ -1883,9 +1883,6 @@ class ResultPanel(QWidget):
             'use': tr('<p>What the cell is still good for, from its category: A high drain (flash units, RC '
                       'models), B medium drain (LED torches, mice), C low drain (remote controls, clocks), '
                       'D recycle.</p>'),
-            'eta': tr('<p>Discharge capacity ÷ the charge put in after it. 75–85 % is normal for NiMH; less means '
-                      'losses (heat, self-discharge), more a charge that may have ended early. It counts once the '
-                      'charge after the discharge is finished.</p>'),
             'volt': tr('<p>The voltage while discharging: after 5 % of the discharge, and the average from 20 to '
                        '80 % (the plateau, shaded darker in the chart). A healthy NiMH cell stays above 1.15 V and '
                        '1.20 V at a discharge current of about 0.2 C; falling below 1.0 V before 80 % is an early '
@@ -1990,19 +1987,16 @@ class ResultPanel(QWidget):
                                (' · ' + tr('nominal {} mAh').format(d['nominal']) if d['nominal'] else ''))
         self.f['time'].setText(f"{fmt_t(d['start'])} – {datetime.fromtimestamp(d['end']):%H:%M} "
                                f"({fmt_dur(d['end'] - d['start'])})")
-        self.f['dis'].setText(f"{d['discharge_mah']} mAh" if d['discharge_mah'] else '–')
-        self.f['chg'].setText(f"{d['charge_mah']} mAh" if d['charge_mah'] else '–')
+        # "2479 mAh (92 %)": % of the nominal capacity; charge: "3001 mAh (83 %)": the charge efficiency
+        nominal = d['nominal'] or NOMINAL.get(d['size'], 0)
+        dis, chg = d['discharge_mah'], d['charge_mah']
+        self.f['dis'].setText(f'{dis} mAh' + (f' ({100 * dis / nominal:.0f} %)' if nominal else '') if dis else '–')
+        self.f['chg'].setText(f'{chg} mAh' + (f" ({h['eta']:.0f} %)" if h and h['eta'] else '') if chg else '–')
         names = {'capacity': tr('capacity'), 'resistance': tr('resistance'), 'voltage': tr('voltage'),
                  'efficiency': tr('efficiency')}
         self.f['health'].setText(tr('{} of 100').format(h['ohi']) + '  (' + ' · '.join(
             f'{names[k]} {round(v)}' for k, v in h['scores'].items()) + ')' if h else '–')
         self.f['use'].setText(tr_data(USES[g]) if h and g in USES else '–')
-        if h and h['eta']:
-            self.f['eta'].setText(f"{round(h['eta'])} %")
-        elif d['discharge_mah'] and d['charge_mah'] and d['status'] == RUNNING:
-            self.f['eta'].setText(tr('when the charge is finished'))
-        else:
-            self.f['eta'].setText('–')
         if d.get('v_mid'):
             volt = (tr('{} V after 5 %').format(f"{d['v_start'] / 1000:.3f}") + ' · ' +
                     tr('{} V on average 20–80 %').format(f"{d['v_mid'] / 1000:.3f}"))
