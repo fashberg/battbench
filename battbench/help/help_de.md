@@ -43,7 +43,8 @@ BattBench verändert nie etwas am Ladegerät: Starten, Stoppen und Einstellungen
 2. Auf die Schacht-Kachel klicken: Diagramm und Ergebnis-Bereich zeigen den laufenden Vorgang.
 3. Im Ergebnis-Bereich den **Akku** wählen (oder zuerst das Modell, um die Liste einzugrenzen). Jede Änderung wird
    sofort gespeichert. Ohne Akku ein Modell wählen oder die **Nennkapazität** eintragen (Vorschläge 500–3000 mAh,
-   jeder Wert kann eingetippt werden).
+   jeder Wert kann eingetippt werden). Eine **Notiz** (z. B. „neue Kontakte“) bleibt beim Vorgang und steht in den
+   Vorgangslisten.
 4. Ist die Entladung vorbei, wird der Vorgang bewertet. Solange sie läuft, zeigt der Bereich z. B. „Analyse läuft“.
 
 Der N8 unterscheidet AA und AAA nicht; seine Vorgänge werden deshalb erst bewertet, wenn Akku, Modell oder

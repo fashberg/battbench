@@ -108,7 +108,7 @@ BattBench never changes anything on the charger: start, stop and settings are do
 2. Click the slot tile: the chart and the result panel show the running session.
 3. In the result panel choose the **battery** (or first the model to narrow the list). Every change is saved at once.
    Without a battery, pick a model or type the **nominal capacity** (suggestions 500–3000 mAh, any value can be
-   typed).
+   typed). A **note** (e.g. “new contacts”) is kept with the session and shown in the session lists.
 4. When the discharge is over, the session is rated. While it is still running the panel shows e.g.
    “analysis running”.
 

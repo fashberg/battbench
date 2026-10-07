@@ -344,6 +344,10 @@
         <translation>Akku:</translation>
     </message>
     <message>
+        <source>e.g. new contacts, after long storage, from the remote control …</source>
+        <translation>z. B. neue Kontakte, nach langer Lagerung, aus der Fernbedienung …</translation>
+    </message>
+    <message>
         <source>– no battery assigned –</source>
         <translation>– kein Akku zugeordnet –</translation>
     </message>

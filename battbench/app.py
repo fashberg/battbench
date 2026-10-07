@@ -551,6 +551,8 @@ class Worker(QObject):
                 self.a4 = cmd[1]
                 if self.source != 'offline':
                     self._apply_a4()
+            elif cmd[0] == 'label':
+                self.db.set_session_meta(cmd[1], label=cmd[2])
             elif cmd[0] == 'battery':
                 b = self.db.battery(cmd[1])
                 if b and b['capacity']:
@@ -1662,6 +1664,7 @@ class BatteryDialog(QDialog):
 
 class ResultPanel(QWidget):
     save = Signal(int, object, int)       # session id, battery id (None = none), nominal
+    save_label = Signal(int, str)         # session id, note
     phase_clicked = Signal(object)        # start time of the phase to show alone, None = whole run
     new_battery = Signal()
 
@@ -1757,6 +1760,12 @@ class ResultPanel(QWidget):
         self.nominal = NominalCombo()         # changes are saved at once (battery too), the session rated anew
         self.nominal.committed.connect(lambda _v: self._save())
         edit.addRow(tr('Nominal capacity:'), self.nominal)
+        self.label = QLineEdit()              # the session's note (sessions.label), saved on Enter / leaving the field
+        self.label.setPlaceholderText(tr('e.g. new contacts, after long storage, from the remote control …'))
+        self.label.setClearButtonEnabled(True)
+        self.label.editingFinished.connect(self._save_label)
+        self.shown_label = ''
+        edit.addRow(tr('Note:'), self.label)
         lay.addLayout(edit)
         self.reload_models()
         self.reload_batteries()
@@ -1907,6 +1916,12 @@ class ResultPanel(QWidget):
             if self.phases.item(i, 0).data(Qt.UserRole) == start:
                 self.phases.selectRow(i)
 
+    def _save_label(self):
+        text = self.label.text().strip()
+        if self.sid is not None and text != self.shown_label:
+            self.shown_label = text
+            self.save_label.emit(self.sid, text)
+
     @staticmethod
     def _nominal_hint(d):
         default = NOMINAL.get(d['size'], 0) if d else 0
@@ -1914,9 +1929,13 @@ class ResultPanel(QWidget):
 
     def show_session(self, d, battery_id=None):
         """d: dict like session_info() / DB.session_dict()."""
+        # another session: keep a note typed without Enter (a tile click doesn't take the focus, so editingFinished
+        # never came)
+        if (d.get('id') if d else None) != self.sid:
+            self._save_label()
         self.cur = d
         enabled = d is not None and d.get('id') is not None
-        for w in (self.battery, self.nominal, self.nb):
+        for w in (self.battery, self.nominal, self.nb, self.label):
             w.setEnabled(enabled)
         if d is None:
             self.sid = None
@@ -1931,6 +1950,8 @@ class ResultPanel(QWidget):
             self._set_model(None)
             self.reload_batteries(select=-1)
             self.nominal.set_value(0, '')
+            self.label.setText('')
+            self.shown_label = ''
             self._lock_model()
             return
         same = self.sid == d.get('id')
@@ -2021,6 +2042,11 @@ class ResultPanel(QWidget):
                 self.reload_batteries(select=battery_id if battery_id is not None else -1)
         if not same or (not self.nominal.hasFocus() and self.nominal.value() == self.shown[1]):
             self.nominal.set_value(d['nominal'] or 0, self._nominal_hint(d))
+        if not same or not self.label.hasFocus():   # don't overwrite what is being typed
+            row = self.db.con.execute('SELECT label FROM sessions WHERE id=?', (self.sid,)).fetchone()
+            self.shown_label = (row[0] if row else '') or ''
+            if self.label.text() != self.shown_label:
+                self.label.setText(self.shown_label)
         self.shown = (battery_id, d['nominal'] or 0)
         self._lock_model()
 
@@ -2030,7 +2056,7 @@ def session_headers():
     return {'start': tr('Start'), 'dev': tr('Charger'), 'slot': tr('Slot'), 'task': tr('Task'),
             'status': tr('Status'), 'battery': tr('Battery'), 'detected': tr('Detected'), 'nominal': tr('Nominal'),
             'dis': tr('Disch. mAh'), 'pct': '%', 'chg': tr('Charge mAh'), 'rmin': tr('R min'), 'tmax': tr('T max'),
-            'grade': tr('Rating'), 'dur': tr('Duration')}
+            'grade': tr('Rating'), 'dur': tr('Duration'), 'label': tr('Note')}
 
 
 
@@ -2226,7 +2252,8 @@ def _fill_session_rows(table, rows, cols):
                 'chg': (d['charge_mah'] or '', d['charge_mah'] or None), 'rmin': (d['res_min'] or '', d['res_min'] or None),
                 'tmax': (d['temp_max'] or '', d['temp_max'] or None),
                 'grade': ((tr_data(RUNNING), None) if is_measuring(d) else grade_cell(d['grade'], d['ohi'])[:2]),
-                'dur': (fmt_dur(d['end'] - d['start']), d['end'] - d['start'])}
+                'dur': (fmt_dur(d['end'] - d['start']), d['end'] - d['start']),
+                'label': (d['label'] or '', (d['label'] or '').lower())}
         for j, c in enumerate(cols):
             text, key = vals[c]
             it = SortItem(str(text))
@@ -2241,6 +2268,8 @@ def _fill_session_rows(table, rows, cols):
                 mark_deleted([it])
                 if j == 0:
                     it.setText(f"{text} {tr('(deleted)')}")
+            if c == 'label':
+                it.setToolTip(d['label'] or '')
             if c == 'grade':
                 it.setData(FILTER_ROLE, tr_data(RUNNING) if is_measuring(d) else grade_cell(d['grade'], d['ohi'])[2])
                 it.setBackground(QColor(GRADE_COLORS.get(d['grade'] or NO_GRADE, '#888')))
@@ -2255,7 +2284,7 @@ class BatteryTab(QWidget):
     changed = Signal(int)                 # battery id added/edited, -1 = deleted
     models_changed = Signal(list)         # a model was added/edited: ids of its batteries
     sessions_deleted = Signal()           # sessions deleted from the history
-    HIST_COLS = ['start', 'dev', 'slot', 'task', 'status', 'dis', 'pct', 'chg', 'rmin', 'tmax', 'grade', 'dur']
+    HIST_COLS = ['start', 'dev', 'slot', 'task', 'status', 'dis', 'pct', 'chg', 'rmin', 'tmax', 'grade', 'dur', 'label']
 
     def __init__(self, db: DB):
         super().__init__()
@@ -2299,7 +2328,7 @@ class BatteryTab(QWidget):
         self.hist_title = QLabel()
         right.addWidget(self.hist_title)
         heads = session_headers()
-        self.hist = make_table([heads[c] for c in self.HIST_COLS], autofilter=True, stretch=False)
+        self.hist = make_table([heads[c] for c in self.HIST_COLS], autofilter=True)    # last: the note
         self.hist.autofilter.header.desc_first = {self.HIST_COLS.index('grade')}     # best first
         self.hist.sortByColumn(0, Qt.DescendingOrder)
         self.hist.setSelectionMode(QAbstractItemView.ExtendedSelection)      # Ctrl / Shift: several, to delete
@@ -3077,7 +3106,7 @@ class DeviceTab(QWidget):
 
 class MainWindow(QMainWindow):
     COLS = ['start', 'dev', 'slot', 'task', 'status', 'battery', 'detected', 'nominal', 'dis', 'pct', 'chg', 'rmin',
-            'tmax', 'grade', 'dur']
+            'tmax', 'grade', 'dur', 'label']
 
     def __init__(self, db_path, source, a4='both', bt=True):
         super().__init__()
@@ -3128,6 +3157,7 @@ class MainWindow(QMainWindow):
         self.result.dev_name = self.dev_name
         self.result.busy = self.busy_batteries
         self.result.save.connect(self.save_meta)
+        self.result.save_label.connect(lambda sid, text: self.worker.cmds.put(('label', sid, text)))
         self.result.new_battery.connect(self.new_battery_for_session)
         self.result.phase_clicked.connect(self.plot.show_phase)          # phase list and chart stay in step
         self.plot.phase_changed.connect(self.result.mark_phase)
@@ -3137,7 +3167,7 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         heads = session_headers()
-        self.table = make_table([heads[c] for c in self.COLS], autofilter=True, stretch=False)
+        self.table = make_table([heads[c] for c in self.COLS], autofilter=True)         # last: the note
         self.table.autofilter.header.desc_first = {self.COLS.index('grade')}         # best first
         self.table.sortByColumn(0, Qt.DescendingOrder)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)      # Ctrl / Shift: several, to delete
@@ -3564,6 +3594,11 @@ class MainWindow(QMainWindow):
                 'models': self.mtab.table, 'chargers': self.dtab.table}
 
     def closeEvent(self, e):
+        if self.result.sid is not None and self.result.label.text().strip() != self.result.shown_label:
+            try:                               # a note still being typed (the worker is stopped below)
+                self.db.set_session_meta(self.result.sid, label=self.result.label.text().strip())
+            except sqlite3.Error as err:
+                print(f'saving the note failed: {err!r}', file=sys.stderr)
         try:
             self.save_layout()
         except sqlite3.Error as err:
