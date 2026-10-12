@@ -5,20 +5,30 @@ cross-checked with rssdev10/skyrc-mc-rs (BLE captures of the MC5000).
 MC5000: 0F 03 91 <bit> cs (bit 01/02/04/08 = slot 1-4), cs = sum(91, bit)
   -> 0F 15 91 bit, mA (u16 BE, no sign), mV (u16 BE), temp (u16 BE, 1/1000 deg C), mAh (u16 BE),
      seconds (u32 BE), mOhm (u16 BE), status, mode, error, battery type, cs
+     (a real MC5000 sends 0F 16 ...: one more byte before the checksum)
+  The MC5000 answers the status query only after the app's handshake 57 (device info): before it, it repeats
+  its greeting 0F 04 06 01 01 08. Sending 57 alone does not disturb running tasks (checked on a real charger
+  while charging four cells).
 MC3000: 0F 55 <slot 0-3> 00 ... (20 bytes), last byte = sum of the others
   -> 0F 55 slot, type, mode, cycle count, status, seconds (u16 BE), mV, mA, mAh (u16 BE), temp (deg C),
      mOhm (u16 BE), LED bits, ..., cs
-Only these status queries are sent. Never: the MC5000 app's handshake / init sequence 57 / 74 / 65 / FE
-(restarts running tasks with reset counters, FE even stops them), start/stop (93), settings (94, MC3000 11).
-Not checked on a real charger."""
+Only the handshake 57 and these status queries are sent. Never: the MC5000 app's init sequence 74 / 65 / FE
+(restarts running tasks with reset counters, FE even stops them), settings (MC3000 11). MC5000 programs (94 / FE) and settings (95)
+only on an explicit start or stop by the user, see mc5000.py.
+MC5000 checked on a real charger, MC3000 not."""
 import asyncio
+import concurrent.futures
+import queue
 import time
 from typing import Optional
 
 from .device import Sample
-from .i18n import QT_TRANSLATE_NOOP as N, tr
+from .model import PAUSE
+from .i18n import QT_TRANSLATE_NOOP, tr
 
 FFE1 = '0000ffe1-0000-1000-8000-00805f9b34fb'
+# MC5000 handshake 57 as the SkyRC app sends it (captured by skyrc-mc-rs)
+MC5000_HELLO = bytes.fromhex('0f135700ff343738c1a4' + '00' * 10 + '5e')
 SLOTS = 4
 POLL_SECS = 2.0
 
@@ -31,24 +41,31 @@ MC5000_TYPES = {0: 'LiIon', 1: 'LiHV', 2: 'LiFe', 3: 'NiMH', 4: 'NiCd', 5: 'Enel
 MC5000_MODES = [((0, 1, 2, 8, 9), ('Charge', 'Storage', 'Discharge', 'Cycle')),
                 ((3, 4, 5), ('Charge', 'Refresh', 'Break in', 'Discharge', 'Cycle')),
                 ((6, 7), ('Charge', 'Discharge', 'Cycle'))]
-# error texts end up in Sample.mode_str (stored in English, translated when shown)
-MC5000_ERRORS = {1: N('data', 'input voltage too low'), 2: N('data', 'input voltage too high'),
-                 3: N('data', 'contact lost'), 4: N('data', 'capacity limit reached'),
-                 5: N('data', 'time limit reached'), 6: N('data', 'internal temperature too high'),
-                 7: N('data', 'calibration failed'), 8: N('data', 'internal resistance too high'),
-                 9: N('data', 'contact lost'), 10: N('data', 'wrong battery type'), 11: N('data', 'overload'),
-                 12: N('data', 'reversed polarity')}                   # 13 'fully charged' = done
+# error texts end up in Sample.mode_str (stored in English, translated when shown); MC5000 error 13 'fully
+# charged' = done. QT_TRANSLATE_NOOP is not aliased: lupdate would not find the texts.
+MC5000_ERRORS = {1: QT_TRANSLATE_NOOP('data', 'input voltage too low'),
+                 2: QT_TRANSLATE_NOOP('data', 'input voltage too high'), 3: QT_TRANSLATE_NOOP('data', 'contact lost'),
+                 4: QT_TRANSLATE_NOOP('data', 'capacity limit reached'),
+                 5: QT_TRANSLATE_NOOP('data', 'time limit reached'),
+                 6: QT_TRANSLATE_NOOP('data', 'internal temperature too high'),
+                 7: QT_TRANSLATE_NOOP('data', 'calibration failed'),
+                 8: QT_TRANSLATE_NOOP('data', 'internal resistance too high'),
+                 9: QT_TRANSLATE_NOOP('data', 'contact lost'), 10: QT_TRANSLATE_NOOP('data', 'wrong battery type'),
+                 11: QT_TRANSLATE_NOOP('data', 'overload'), 12: QT_TRANSLATE_NOOP('data', 'reversed polarity')}
 MC3000_TYPES = {0: 'LiIon', 1: 'LiFe', 2: 'LiHV', 3: 'NiMH', 4: 'NiCd', 5: 'NiZn', 6: 'Eneloop', 7: 'RAM',
                 8: 'LTO'}
 MC3000_MODES = [((0, 1, 2, 8), ('Charge', 'Refresh', 'Storage', 'Discharge', 'Cycle')),
                 ((5, 7), ('Charge', 'Refresh', 'Discharge', 'Cycle')),
                 ((3, 4, 6), ('Charge', 'Refresh', 'Break in', 'Discharge', 'Cycle'))]
-MC3000_ERRORS = {128: N('data', 'input voltage too low'), 129: N('data', 'input voltage too high'),
-                 130: N('data', 'ADC error 1'), 131: N('data', 'ADC error 2'), 132: N('data', 'contact lost'),
-                 133: N('data', 'check voltage'), 134: N('data', 'capacity limit reached'),
-                 135: N('data', 'time limit reached'), 136: N('data', 'charger too hot'),
-                 137: N('data', 'battery too hot'), 138: N('data', 'short circuit'),
-                 139: N('data', 'reversed polarity'), 140: N('data', 'internal resistance too high')}
+MC3000_ERRORS = {128: QT_TRANSLATE_NOOP('data', 'input voltage too low'),
+                 129: QT_TRANSLATE_NOOP('data', 'input voltage too high'),
+                 130: QT_TRANSLATE_NOOP('data', 'ADC error 1'), 131: QT_TRANSLATE_NOOP('data', 'ADC error 2'),
+                 132: QT_TRANSLATE_NOOP('data', 'contact lost'), 133: QT_TRANSLATE_NOOP('data', 'check voltage'),
+                 134: QT_TRANSLATE_NOOP('data', 'capacity limit reached'),
+                 135: QT_TRANSLATE_NOOP('data', 'time limit reached'),
+                 136: QT_TRANSLATE_NOOP('data', 'charger too hot'), 137: QT_TRANSLATE_NOOP('data', 'battery too hot'),
+                 138: QT_TRANSLATE_NOOP('data', 'short circuit'), 139: QT_TRANSLATE_NOOP('data', 'reversed polarity'),
+                 140: QT_TRANSLATE_NOOP('data', 'internal resistance too high')}
 
 
 def checksum(b) -> int:
@@ -74,7 +91,7 @@ def _operation(modes, btype, mode):
 
 
 def _sample(slot, dev, raw, *, mv, ma, mah, secs, res, temp, chem, op, state, error=''):
-    """state: 'empty' / 'idle' / 'run' / 'down' (discharging) / 'done' / 'error'."""
+    """state: 'empty' / 'idle' / 'run' / 'down' (discharging) / 'pause' (rest between phases) / 'done' / 'error'."""
     task = TASK.get(op, 3)
     if state == 'empty':
         mode, mode_str, size = 0, 'empty', 'empty'
@@ -85,7 +102,7 @@ def _sample(slot, dev, raw, *, mv, ma, mah, secs, res, temp, chem, op, state, er
     elif state == 'error':
         mode, mode_str, size = 20, error or 'error', ''
     else:
-        mode, mode_str, size = task, op or 'running', ''
+        mode, mode_str, size = task, PAUSE if state == 'pause' else op or 'running', ''
     down = state == 'down'
     return Sample(t=time.time(), slot=slot, mode=mode, mode_str=mode_str, chem=chem, size=size, mv=mv,
                   ma=-ma if down else ma, res=0 if res in (1, 0xFFFF) else res, mah=-mah if down else mah,
@@ -115,10 +132,11 @@ class SkyCharger:
 
     def matches(self, slot, p: bytes) -> bool:
         if self.model == 'MC5000':
-            # notifications may be cut to 20 bytes (default MTU); then status / mode / error / type are
-            # missing and there is no checksum to check
+            # 0F <length> 91 ... cs: length 0x15 (23 bytes) in captures, 0x16 (24 bytes, one more byte at the
+            # end) seen on a real charger; cs = sum from 91 on. Notifications may be cut to 20 bytes (default
+            # MTU); then status / mode / error / type are missing and there is no checksum to check
             return len(p) >= 18 and p[0] == 0x0F and p[2] == 0x91 and p[3] == 1 << slot and \
-                (len(p) < 23 or checksum(p[2:22]) == p[22])
+                (len(p) != p[1] + 2 or checksum(p[2:-1]) == p[-1])
         return len(p) >= 19 and p[0] == 0x0F and p[1] == 0x55 and p[2] == slot and checksum(p[:-1]) == p[-1]
 
     def sample(self, slot, p: bytes, dev) -> Optional[Sample]:
@@ -131,9 +149,13 @@ class SkyCharger:
             if len(p) < 21:                      # cut notification: no status -> charging when current flows
                 status = 2 if ma else 0
             op = _operation(MC5000_MODES, btype, mode)
-            state = ('empty' if mv == 0 else 'idle') if status == 0 else \
-                'done' if status in (5, 6) or err == 13 else 'error' if err else \
-                'down' if status == 3 else 'run'
+            # A task stopped by the charger (e.g. capacity limit) reports status 0 with the error for a while, and
+            # mAh / time already reset. Without a task the current field holds a stale value.
+            if status == 0:
+                ma = 0
+            state = 'done' if status in (5, 6) or err == 13 else 'error' if err else \
+                ('empty' if mv == 0 else 'idle') if status == 0 else 'down' if status == 3 else \
+                'pause' if status == 4 else 'run'
             return _sample(slot, dev, p, mv=mv, ma=ma, mah=mah, secs=secs, res=res, temp=temp // 1000,
                            chem=MC5000_TYPES.get(btype, ''), op=op, state=state, error=MC5000_ERRORS.get(err, ''))
         btype, mode, status = p[3], p[4], p[6]
@@ -141,7 +163,7 @@ class SkyCharger:
         temp, res = p[15], int.from_bytes(p[16:18], 'big')
         op = _operation(MC3000_MODES, btype, mode)
         state = ('empty' if mv == 0 else 'idle') if status == 0 else 'done' if status == 4 else \
-            'error' if status >= 128 else 'down' if status == 2 else 'run'             # 3 = pause
+            'error' if status >= 128 else 'down' if status == 2 else 'pause' if status == 3 else 'run'
         return _sample(slot, dev, p, mv=mv, ma=ma, mah=mah, secs=secs, res=res, temp=temp,
                        chem=MC3000_TYPES.get(btype, ''), op=op, state=state, error=MC3000_ERRORS.get(status, ''))
 
@@ -167,12 +189,31 @@ async def serve(manager, r, hint):
                 return d
         return None
 
+    async def send(pkt, timeout=2.0):
+        """A charger command (mc5000 packets); returns its answer with the same command byte, b'' = none."""
+        while not inbox.empty():
+            inbox.get_nowait()
+        await client.write_gatt_char(FFE1, pkt, response=False)
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                d = await asyncio.wait_for(inbox.get(), max(0.01, end - time.time()))
+            except asyncio.TimeoutError:
+                break
+            if len(d) >= 3 and d[0] == 0x0F and d[2] == pkt[2]:
+                return d
+        return b''
+
     opened = False
+    client = None
     try:
         async with BleakClient(r.address, timeout=20) as client:
             await asyncio.sleep(1.0)
             await client.start_notify(FFE1, note)
             await asyncio.sleep(0.3)
+            if hint != 'MC3000':
+                await client.write_gatt_char(FFE1, MC5000_HELLO, response=False)
+                await asyncio.sleep(0.8)
             c = None
             for model in ([hint] if hint in ('MC3000', 'MC5000') else ['MC5000', 'MC3000']):
                 probe = SkyCharger(r.address, model)
@@ -182,6 +223,13 @@ async def serve(manager, r, hint):
             if c is None:
                 raise RuntimeError(tr('no answer to the status query (not an MC3000 / MC5000?)'))
             r.charger = c
+            r.commands = queue.Queue()           # (packet, Future) from command(): sent between two queries
+
+            def command(pkt: bytes, timeout=15) -> bytes:
+                fut = concurrent.futures.Future()
+                r.commands.put((pkt, fut))
+                return fut.result(timeout)
+            r.command = command
             r.out.put(('open', r))
             opened = True
             for _ in range(100):                 # worker assigns the device id
@@ -192,6 +240,13 @@ async def serve(manager, r, hint):
                 t0 = time.time()
                 batch = []
                 for slot in range(SLOTS):
+                    while not r.commands.empty():
+                        pkt, fut = r.commands.get_nowait()
+                        try:
+                            fut.set_result(await send(pkt))
+                        except Exception as e:
+                            fut.set_exception(e)
+                        await asyncio.sleep(0.1)
                     p = await ask(c, slot)
                     s = c.sample(slot, p, r.dev) if p else None
                     if s:
@@ -203,6 +258,9 @@ async def serve(manager, r, hint):
         if not opened:
             r.out.put(('fail', r, f'SkyRC {r.address}: {e}'))
     finally:
+        cmds = getattr(r, 'commands', None)
+        while cmds is not None and not cmds.empty():
+            cmds.get_nowait()[1].set_exception(ConnectionError('Bluetooth disconnected'))
         manager.active.pop(r.address, None)
         if opened:
             r.out.put(('lost', r, tr('Bluetooth disconnected')))

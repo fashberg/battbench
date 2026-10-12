@@ -16,6 +16,26 @@
         <translation>nur USB</translation>
     </message>
     <message>
+        <source>Automatic (BattBench-ESP or Bluetooth of this PC)</source>
+        <translation>Automatisch (BattBench-ESP oder Bluetooth dieses PCs)</translation>
+    </message>
+    <message>
+        <source>Only through a BattBench-ESP</source>
+        <translation>Nur über ein BattBench-ESP</translation>
+    </message>
+    <message>
+        <source>Only over Bluetooth of this PC</source>
+        <translation>Nur über Bluetooth dieses PCs</translation>
+    </message>
+    <message>
+        <source>not used (SkyRC chargers only through a BattBench-ESP)</source>
+        <translation>nicht benutzt (SkyRC-Ladegeräte nur über ein BattBench-ESP)</translation>
+    </message>
+    <message>
+        <source>not ready (Bluetooth search fails), ignored</source>
+        <translation>nicht bereit (Bluetooth-Suche schlägt fehl), ignoriert</translation>
+    </message>
+    <message>
         <source>%b %d, %H:%M</source>
         <translation>%d.%m. %H:%M</translation>
     </message>
@@ -64,6 +84,14 @@
         <translation>USB-Fehler: {}</translation>
     </message>
     <message>
+        <source>{}: answering again</source>
+        <translation>{}: antwortet wieder</translation>
+    </message>
+    <message>
+        <source>{}: no answer since {}</source>
+        <translation>{}: keine Antwort seit {}</translation>
+    </message>
+    <message>
         <source>{}: recognised over USB and Bluetooth</source>
         <translation>{}: über USB und Bluetooth erkannt</translation>
     </message>
@@ -104,6 +132,54 @@
         <translation>Keine Messwerte zu komprimieren</translation>
     </message>
     <message>
+        <source>No Bluetooth charger.</source>
+        <translation>Kein Bluetooth-Ladegerät.</translation>
+    </message>
+    <message>
+        <source>The charger is not connected over Bluetooth or a BattBench-ESP.</source>
+        <translation>Das Ladegerät ist weder per Bluetooth noch über ein BattBench-ESP verbunden.</translation>
+    </message>
+    <message>
+        <source>the charger did not take the settings ({})</source>
+        <translation>das Ladegerät hat die Einstellungen nicht angenommen ({})</translation>
+    </message>
+    <message>
+        <source>the charger reports other settings than were sent</source>
+        <translation>das Ladegerät meldet andere Einstellungen als gesendet</translation>
+    </message>
+    <message>
+        <source>Charger settings saved.</source>
+        <translation>Einstellungen des Ladegeräts gespeichert.</translation>
+    </message>
+    <message>
+        <source>no valid answer ({})</source>
+        <translation>keine gültige Antwort ({})</translation>
+    </message>
+    <message>
+        <source>Slot {} stopped.</source>
+        <translation>Schacht {} gestoppt.</translation>
+    </message>
+    <message>
+        <source>slot {}: the charger did not take the program ({})</source>
+        <translation>Schacht {}: das Ladegerät hat das Programm nicht angenommen ({})</translation>
+    </message>
+    <message>
+        <source>slot {}: the charger does not show the program</source>
+        <translation>Schacht {}: das Ladegerät zeigt das Programm nicht an</translation>
+    </message>
+    <message>
+        <source>Profile &quot;{}&quot; started on slot {}.</source>
+        <translation>Profil „{}“ auf Schacht {} gestartet.</translation>
+    </message>
+    <message>
+        <source>Slot {}: programmed, starts when a battery is inserted.</source>
+        <translation>Schacht {}: programmiert, startet, sobald ein Akku eingelegt wird.</translation>
+    </message>
+    <message>
+        <source>The charger command failed: {}</source>
+        <translation>Der Befehl an das Ladegerät ist fehlgeschlagen: {}</translation>
+    </message>
+    <message>
         <source>Slot {}</source>
         <translation>Slot {}</translation>
     </message>
@@ -138,6 +214,10 @@
     <message>
         <source>Reset view</source>
         <translation>Ansicht zurücksetzen</translation>
+    </message>
+    <message>
+        <source>Export report …</source>
+        <translation>Bericht exportieren …</translation>
     </message>
     <message>
         <source>phase: {} (click: whole run)</source>
@@ -276,6 +356,10 @@
         <translation>Kein Vorgang gewählt</translation>
     </message>
     <message>
+        <source>Report of this session as HTML (optionally PDF): rating, battery, charger, chart, details and the charge / discharge phases</source>
+        <translation>Bericht dieses Vorgangs als HTML (wahlweise PDF): Bewertung, Akku, Ladegerät, Diagramm, Details und die Lade-/Entladephasen</translation>
+    </message>
+    <message>
         <source>Task</source>
         <translation>Vorgang</translation>
     </message>
@@ -392,10 +476,6 @@
         <translation>der Akku wurde entnommen, bevor der Vorgang fertig war</translation>
     </message>
     <message>
-        <source>the task was stopped or replaced by another one, or the data broke off</source>
-        <translation>der Vorgang wurde abgebrochen, durch einen anderen ersetzt, oder die Daten brachen ab</translation>
-    </message>
-    <message>
         <source>&lt;p&gt;The charge put into the battery after the discharge (or during a plain charge). In brackets the charge efficiency, discharge ÷ charge: 75–85 % is normal for NiMH; less means losses (heat, self-discharge), more means a charge that may have ended early. It is shown once the charge after the discharge is finished.&lt;/p&gt;</source>
         <translation>&lt;p&gt;Die Ladung, die nach der Entladung (oder bei einem reinen Ladevorgang) eingeladen wurde. In Klammern die Ladeeffizienz, Entladung ÷ Ladung: 75–85 % sind für NiMH normal; weniger heißt Verluste (Wärme, Selbstentladung), mehr heißt eine möglicherweise zu früh beendete Ladung. Sie erscheint, sobald die Ladung nach der Entladung fertig ist.&lt;/p&gt;</translation>
     </message>
@@ -424,6 +504,238 @@
         <translation>Standard ({} mAh)</translation>
     </message>
     <message>
+        <source>Status (charging / discharging / pause / done / error), operation, battery type, voltage, current, mAh, time, temperature, internal resistance. MC5000: start / stop with profiles, charger settings, Bluetooth pause (over Bluetooth or a BattBench-ESP). MC3000: read only.</source>
+        <translation>Status (lädt / entlädt / Pause / fertig / Fehler), Betriebsart, Akkutyp, Spannung, Strom, mAh, Zeit, Temperatur, Innenwiderstand. MC5000: Start / Stopp mit Profilen, Geräteeinstellungen, Bluetooth-Pause (über Bluetooth oder ein BattBench-ESP). MC3000: nur lesen.</translation>
+    </message>
+    <message>
+        <source>Connect SkyRC chargers:</source>
+        <translation>SkyRC-Ladegeräte verbinden:</translation>
+    </message>
+    <message>
+        <source>An MC5000 takes only one Bluetooth connection. Automatic switches to &quot;BattBench-ESP&quot; once a BattBench-ESP was connected.</source>
+        <translation>Ein MC5000 nimmt nur eine Bluetooth-Verbindung an. „Automatisch“ wechselt zu „BattBench-ESP“, sobald einmal ein BattBench-ESP verbunden war.</translation>
+    </message>
+    <message>
+        <source>Storage voltage</source>
+        <translation>Lagerspannung</translation>
+    </message>
+    <message>
+        <source>Time limit</source>
+        <translation>Zeitgrenze</translation>
+    </message>
+    <message>
+        <source>Eneloop type</source>
+        <translation>Eneloop-Typ</translation>
+    </message>
+    <message>
+        <source>Edit profile</source>
+        <translation>Profil bearbeiten</translation>
+    </message>
+    <message>
+        <source>Current settings</source>
+        <translation>Aktuelle Einstellungen</translation>
+    </message>
+    <message>
+        <source>Save as new profile</source>
+        <translation>Als neues Profil speichern</translation>
+    </message>
+    <message>
+        <source>Clone</source>
+        <translation>Klonen</translation>
+    </message>
+    <message>
+        <source>Use</source>
+        <translation>Verwenden</translation>
+    </message>
+    <message>
+        <source>Create new profile</source>
+        <translation>Neues Profil erstellen</translation>
+    </message>
+    <message>
+        <source>Charger control</source>
+        <translation>Ladegerätsteuerung</translation>
+    </message>
+    <message>
+        <source>Slot {} (click a tile, Ctrl + click for several)</source>
+        <translation>Schacht {} (Kachel anklicken, Strg + Klick für mehrere)</translation>
+    </message>
+    <message>
+        <source>Create new from current settings …</source>
+        <translation>Neu aus aktuellen Einstellungen …</translation>
+    </message>
+    <message>
+        <source>New profile with the defaults of the SkyRC app</source>
+        <translation>Neues Profil mit den Vorgaben der SkyRC-App</translation>
+    </message>
+    <message>
+        <source>Charger settings (sounds, backlight, screen timeout) and Bluetooth connection</source>
+        <translation>Ladegerät-Einstellungen (Töne, Licht, Bildschirm-Timeout) und Bluetooth-Verbindung</translation>
+    </message>
+    <message>
+        <source>Profile &lt;b&gt;{}&lt;/b&gt;</source>
+        <translation>Profil &lt;b&gt;{}&lt;/b&gt;</translation>
+    </message>
+    <message>
+        <source>Started from BattBench, no saved profile matches it.</source>
+        <translation>Von BattBench gestartet, kein gespeichertes Profil passt genau.</translation>
+    </message>
+    <message>
+        <source>No data from this slot yet.</source>
+        <translation>Noch keine Daten von diesem Schacht.</translation>
+    </message>
+    <message>
+        <source>charge {} A</source>
+        <translation>Laden {} A</translation>
+    </message>
+    <message>
+        <source>discharge {} A</source>
+        <translation>Entladen {} A</translation>
+    </message>
+    <message>
+        <source>Set on the charger:</source>
+        <translation>Am Gerät eingestellt:</translation>
+    </message>
+    <message>
+        <source>The charger does not report voltages, rests, cycles and the other values.</source>
+        <translation>Spannungen, Pausen, Zyklen und die übrigen Werte meldet das Gerät nicht.</translation>
+    </message>
+    <message>
+        <source>Fits: {}</source>
+        <translation>Passt zu: {}</translation>
+    </message>
+    <message>
+        <source>Not connected over Bluetooth or a BattBench-ESP: starting and stopping is not possible.</source>
+        <translation>Nicht per Bluetooth oder BattBench-ESP verbunden: Starten und Stoppen geht nicht.</translation>
+    </message>
+    <message>
+        <source>Slots {}</source>
+        <translation>Schächte {}</translation>
+    </message>
+    <message>
+        <source>Different settings – choose only one slot to see them.</source>
+        <translation>Unterschiedliche Einstellungen – nur einen Schacht wählen, um sie zu sehen.</translation>
+    </message>
+    <message>
+        <source>Click a slot tile (Ctrl + click for several).</source>
+        <translation>Schacht-Kachel anklicken (Strg + Klick für mehrere).</translation>
+    </message>
+    <message>
+        <source>Bluetooth connection</source>
+        <translation>Bluetooth-Verbindung</translation>
+    </message>
+    <message>
+        <source>The charger takes only one Bluetooth connection. Pause or switch it off here to use the SkyRC app; this applies to BattBench and every BattBench-ESP.</source>
+        <translation>Das Ladegerät nimmt nur eine Bluetooth-Verbindung an. Zum Benutzen der SkyRC-App hier pausieren oder ausschalten; das gilt für BattBench und jedes BattBench-ESP.</translation>
+    </message>
+    <message>
+        <source>Asking …</source>
+        <translation>Frage ab …</translation>
+    </message>
+    <message>
+        <source>Pause 5 min</source>
+        <translation>5 min pausieren</translation>
+    </message>
+    <message>
+        <source>Switch off</source>
+        <translation>Ausschalten</translation>
+    </message>
+    <message>
+        <source>Switch on</source>
+        <translation>Einschalten</translation>
+    </message>
+    <message>
+        <source>BattBench-ESP web page …</source>
+        <translation>Webseite des BattBench-ESP …</translation>
+    </message>
+    <message>
+        <source>Opens the web page of the BattBench-ESP in the browser</source>
+        <translation>Öffnet die Webseite des BattBench-ESP im Browser</translation>
+    </message>
+    <message>
+        <source>paused, {} left</source>
+        <translation>pausiert, noch {}</translation>
+    </message>
+    <message>
+        <source>off (started with --no-bt)</source>
+        <translation>aus (mit --no-bt gestartet)</translation>
+    </message>
+    <message>
+        <source>switched off</source>
+        <translation>ausgeschaltet</translation>
+    </message>
+    <message>
+        <source>may connect</source>
+        <translation>darf verbinden</translation>
+    </message>
+    <message>
+        <source>BattBench (Bluetooth of this PC):</source>
+        <translation>BattBench (Bluetooth dieses PCs):</translation>
+    </message>
+    <message>
+        <source>not reachable</source>
+        <translation>nicht erreichbar</translation>
+    </message>
+    <message>
+        <source>No Bluetooth connection known.</source>
+        <translation>Keine Bluetooth-Verbindung bekannt.</translation>
+    </message>
+    <message>
+        <source>HTML page (charts embedded, opens in any browser)</source>
+        <translation>HTML-Seite (Diagramme eingebettet, öffnet in jedem Browser)</translation>
+    </message>
+    <message>
+        <source>PDF (DIN A4)</source>
+        <translation>PDF (DIN A4)</translation>
+    </message>
+    <message>
+        <source>Format:</source>
+        <translation>Format:</translation>
+    </message>
+    <message>
+        <source>Bluetooth deactivated</source>
+        <translation>Bluetooth deaktiviert</translation>
+    </message>
+    <message>
+        <source>Bluetooth paused</source>
+        <translation>Bluetooth pausiert</translation>
+    </message>
+    <message>
+        <source>Connects again in {}.</source>
+        <translation>Verbindet wieder in {}.</translation>
+    </message>
+    <message>
+        <source>Start profile &quot;{}&quot; on slot {}?</source>
+        <translation>Profil „{}“ auf Schacht {} starten?</translation>
+    </message>
+    <message>
+        <source>Start a profile …</source>
+        <translation>Profil starten …</translation>
+    </message>
+    <message>
+        <source>Stop slot {}</source>
+        <translation>Schacht {} stoppen</translation>
+    </message>
+    <message>
+        <source>Charger not connected over Bluetooth / BattBench-ESP</source>
+        <translation>Ladegerät nicht per Bluetooth / BattBench-ESP verbunden</translation>
+    </message>
+    <message>
+        <source>Stop</source>
+        <translation>Stoppen</translation>
+    </message>
+    <message>
+        <source>Stop slot {}? The task there ends.</source>
+        <translation>Schacht {} stoppen? Der Vorgang dort endet.</translation>
+    </message>
+    <message>
+        <source>Sending to the charger …</source>
+        <translation>Sende an das Ladegerät …</translation>
+    </message>
+    <message>
+        <source>No profile yet: create one in the tab Profiles.</source>
+        <translation>Noch kein Profil: lege eines im Tab Profile an.</translation>
+    </message>
+    <message>
         <source>not set</source>
         <translation>nicht gesetzt</translation>
     </message>
@@ -434,6 +746,10 @@
     <message>
         <source>– special battery without a model (enter values by hand) –</source>
         <translation>– Spezialakku ohne Modell (Werte von Hand eingeben) –</translation>
+    </message>
+    <message>
+        <source>the task was stopped or replaced by another one, the charger stopped it with an error (see the rating note), or the data broke off</source>
+        <translation>der Vorgang wurde abgebrochen oder durch einen anderen ersetzt, das Ladegerät hat ihn mit einem Fehler beendet (siehe Hinweis zur Bewertung), oder die Daten brachen ab</translation>
     </message>
     <message>
         <source>&lt;p&gt;The capacity the battery delivered during the (last) discharge, measured by the charger; in brackets in % of the nominal capacity. It is the largest part of the health index: from 90 % the capacity score is full, below 70 % the cell is rated D.&lt;/p&gt;</source>
@@ -502,6 +818,38 @@
     <message>
         <source>New battery …</source>
         <translation>Neuer Akku …</translation>
+    </message>
+    <message>
+        <source>Charger offline</source>
+        <translation>Ladegerät offline</translation>
+    </message>
+    <message>
+        <source>The same values, through an ESP32 that keeps the Bluetooth connection and records while BattBench is not running; BattBench fetches the missed readings when it starts.</source>
+        <translation>Dieselben Werte über einen ESP32, der die Bluetooth-Verbindung hält und aufzeichnet, während BattBench nicht läuft; BattBench holt die verpassten Messwerte beim Start nach.</translation>
+    </message>
+    <message>
+        <source>Host names or IP addresses:</source>
+        <translation>Hostnamen oder IP-Adressen:</translation>
+    </message>
+    <message>
+        <source>An ESP32 with the BattBench-ESP firmware keeps the Bluetooth connection to a SkyRC charger and records while BattBench is not running. Several separated by spaces.</source>
+        <translation>Ein ESP32 mit der BattBench-ESP-Firmware hält die Bluetooth-Verbindung zu einem SkyRC-Ladegerät und zeichnet auf, während BattBench nicht läuft. Mehrere durch Leerzeichen getrennt.</translation>
+    </message>
+    <message>
+        <source>Apply</source>
+        <translation>Übernehmen</translation>
+    </message>
+    <message>
+        <source>Find BattBench-ESP in the network automatically (mDNS)</source>
+        <translation>BattBench-ESP im Netzwerk automatisch finden (mDNS)</translation>
+    </message>
+    <message>
+        <source> (found automatically)</source>
+        <translation> (automatisch gefunden)</translation>
+    </message>
+    <message>
+        <source>none found yet</source>
+        <translation>noch keiner gefunden</translation>
     </message>
     <message>
         <source>Compress readings older than two weeks automatically (one per minute)</source>
@@ -764,10 +1112,6 @@
         <translation>Wie A4 Air über Bluetooth.</translation>
     </message>
     <message>
-        <source>Status (charging / discharging / pause / done / error), operation, battery type, voltage, current, mAh, time, temperature, internal resistance. Read only (no start / stop).</source>
-        <translation>Status (lädt / entlädt / Pause / fertig / Fehler), Betriebsart, Akkutyp, Spannung, Strom, mAh, Zeit, Temperatur, Innenwiderstand. Nur lesen (kein Start / Stopp).</translation>
-    </message>
-    <message>
         <source>Bluetooth (recommended)</source>
         <translation>Bluetooth (empfohlen)</translation>
     </message>
@@ -976,12 +1320,208 @@
         <translation>Alle gelöschten Einträge endgültig löschen ({} Vorgänge, {} Akkus, {} Modelle)? Die Messwerte bleiben erhalten. Das lässt sich nicht rückgängig machen.</translation>
     </message>
     <message>
+        <source>Log file:</source>
+        <translation>Log-Datei:</translation>
+    </message>
+    <message>
         <source>Battery test bench: tracking and analysis of rechargeable batteries</source>
         <translation>Akku-Prüfstand: Tracking und Analyse von Akkus</translation>
     </message>
     <message>
         <source>Not affiliated with ISDT or SkyRC. Never leave charging batteries unattended.</source>
         <translation>Keine Verbindung zu ISDT oder SkyRC. Ladende Akkus nie unbeaufsichtigt lassen.</translation>
+    </message>
+    <message>
+        <source>Charge</source>
+        <translation>Laden</translation>
+    </message>
+    <message>
+        <source>Storage</source>
+        <translation>Lagern</translation>
+    </message>
+    <message>
+        <source>Discharge</source>
+        <translation>Entladen</translation>
+    </message>
+    <message>
+        <source>Cycle</source>
+        <translation>Zyklus</translation>
+    </message>
+    <message>
+        <source>Refresh</source>
+        <translation>Auffrischen</translation>
+    </message>
+    <message>
+        <source>Break in</source>
+        <translation>Formieren</translation>
+    </message>
+    <message>
+        <source>Charge current</source>
+        <translation>Ladestrom</translation>
+    </message>
+    <message>
+        <source>Discharge current</source>
+        <translation>Entladestrom</translation>
+    </message>
+    <message>
+        <source>Capacity limit</source>
+        <translation>Kapazitätsgrenze</translation>
+    </message>
+    <message>
+        <source>Charge voltage</source>
+        <translation>Ladeschlussspannung</translation>
+    </message>
+    <message>
+        <source>Discharge cut-off</source>
+        <translation>Entladeschlussspannung</translation>
+    </message>
+    <message>
+        <source>Charge end current</source>
+        <translation>Ladeende-Strom</translation>
+    </message>
+    <message>
+        <source>Discharge end current</source>
+        <translation>Entladeende-Strom</translation>
+    </message>
+    <message>
+        <source>Cycles</source>
+        <translation>Zyklen</translation>
+    </message>
+    <message>
+        <source>Rest after charging</source>
+        <translation>Pause nach dem Laden</translation>
+    </message>
+    <message>
+        <source>Rest after discharging</source>
+        <translation>Pause nach dem Entladen</translation>
+    </message>
+    <message>
+        <source>-ΔV end of charge</source>
+        <translation>-ΔV Ladeende</translation>
+    </message>
+    <message>
+        <source>Trickle current afterwards</source>
+        <translation>Erhaltungsladung danach</translation>
+    </message>
+    <message>
+        <source>Recharge below</source>
+        <translation>Nachladen unter</translation>
+    </message>
+    <message>
+        <source>Temperature limit</source>
+        <translation>Temperaturgrenze</translation>
+    </message>
+    <message>
+        <source>Maximum time</source>
+        <translation>Höchstdauer</translation>
+    </message>
+    <message>
+        <source>New</source>
+        <translation>Neu</translation>
+    </message>
+    <message>
+        <source>Copy</source>
+        <translation>Kopieren</translation>
+    </message>
+    <message>
+        <source>Right click on a slot of an MC5000 to start a profile there, also on several slots.</source>
+        <translation>Rechtsklick auf einen Schacht eines MC5000 startet dort ein Profil, auch auf mehreren Schächten.</translation>
+    </message>
+    <message>
+        <source>Battery type</source>
+        <translation>Akkutyp</translation>
+    </message>
+    <message>
+        <source>Order</source>
+        <translation>Reihenfolge</translation>
+    </message>
+    <message>
+        <source>Save</source>
+        <translation>Speichern</translation>
+    </message>
+    <message>
+        <source>Profiles</source>
+        <translation>Profile</translation>
+    </message>
+    <message>
+        <source>Please give the profile a name.</source>
+        <translation>Bitte gib dem Profil einen Namen.</translation>
+    </message>
+    <message>
+        <source>New profile</source>
+        <translation>Neues Profil</translation>
+    </message>
+    <message>
+        <source>(copy)</source>
+        <translation>(Kopie)</translation>
+    </message>
+    <message>
+        <source>Delete the profile &quot;{}&quot;?</source>
+        <translation>Profil „{}“ löschen?</translation>
+    </message>
+    <message>
+        <source>New profile with the current settings of the slot as template</source>
+        <translation>Neues Profil mit den aktuellen Einstellungen des Schachts als Vorlage</translation>
+    </message>
+    <message>
+        <source>Edit the chosen profile; with &quot;Current settings&quot;: change them for the next start</source>
+        <translation>Gewähltes Profil bearbeiten; bei „Aktuelle Einstellungen“: für den nächsten Start ändern</translation>
+    </message>
+    <message>
+        <source>Changed current settings, used at the next start:</source>
+        <translation>Geänderte aktuelle Einstellungen, gelten beim nächsten Start:</translation>
+    </message>
+    <message>
+        <source>Charger settings</source>
+        <translation>Einstellungen des Ladegeräts</translation>
+    </message>
+    <message>
+        <source>Reading the settings from the charger …</source>
+        <translation>Lese die Einstellungen vom Ladegerät …</translation>
+    </message>
+    <message>
+        <source>Key beep</source>
+        <translation>Tastenton</translation>
+    </message>
+    <message>
+        <source>Notification sound</source>
+        <translation>Benachrichtigungston</translation>
+    </message>
+    <message>
+        <source>Completion tone</source>
+        <translation>Abschlusston</translation>
+    </message>
+    <message>
+        <source>Backlight</source>
+        <translation>LCD-Licht</translation>
+    </message>
+    <message>
+        <source>Screen timeout</source>
+        <translation>Bildschirm-Timeout</translation>
+    </message>
+    <message>
+        <source>{} min</source>
+        <translation>{} min</translation>
+    </message>
+    <message>
+        <source>Settings of the charger. Save sends them to it.</source>
+        <translation>Einstellungen des Ladegeräts. Speichern sendet sie an das Gerät.</translation>
+    </message>
+    <message>
+        <source>Start a profile</source>
+        <translation>Profil starten</translation>
+    </message>
+    <message>
+        <source>Profile</source>
+        <translation>Profil</translation>
+    </message>
+    <message>
+        <source>Slots (the same profile on each):</source>
+        <translation>Schächte (jeweils dasselbe Profil):</translation>
+    </message>
+    <message>
+        <source>Slot {} is working: its task is replaced and starts again from zero.</source>
+        <translation>Schacht {} arbeitet: sein Vorgang wird ersetzt und beginnt von vorn.</translation>
     </message>
     <message>
         <source>Rename …</source>
@@ -1052,6 +1592,10 @@
         <translation>Gerät {}</translation>
     </message>
     <message>
+        <source>no answer</source>
+        <translation>keine Antwort</translation>
+    </message>
+    <message>
         <source>{} · via {}</source>
         <translation>{} · über {}</translation>
     </message>
@@ -1060,12 +1604,112 @@
         <translation>getrennt</translation>
     </message>
     <message>
+        <source>Export report</source>
+        <translation>Bericht exportieren</translation>
+    </message>
+    <message>
+        <source>Language of the app ({})</source>
+        <translation>Sprache der App ({})</translation>
+    </message>
+    <message>
+        <source>A chart for each charge / discharge phase</source>
+        <translation>Ein Diagramm für jede Lade-/Entladephase</translation>
+    </message>
+    <message>
+        <source>This session has only one phase.</source>
+        <translation>Dieser Vorgang hat nur eine Phase.</translation>
+    </message>
+    <message>
+        <source>Export …</source>
+        <translation>Exportieren …</translation>
+    </message>
+    <message>
         <source>Slot {}: no data</source>
         <translation>Slot {}: keine Daten</translation>
     </message>
     <message>
         <source>Slot {}: {}</source>
         <translation>Slot {}: {}</translation>
+    </message>
+    <message>
+        <source>Resume now</source>
+        <translation>Jetzt fortsetzen</translation>
+    </message>
+    <message>
+        <source>The charger is free for the SkyRC app; nothing is recorded.</source>
+        <translation>Das Ladegerät ist frei für die SkyRC-App; es wird nichts aufgezeichnet.</translation>
+    </message>
+    <message>
+        <source>No answer since {} ({}).</source>
+        <translation>Keine Antwort seit {} ({}).</translation>
+    </message>
+    <message>
+        <source>The charger may still be charging, but nothing is recorded. BattBench keeps trying to reach it.</source>
+        <translation>Das Ladegerät lädt eventuell weiter, aber nichts wird aufgezeichnet. BattBench versucht weiter, es zu erreichen.</translation>
+    </message>
+    <message>
+        <source>If this does not end, unplug the USB cable and plug it in again.</source>
+        <translation>Hört das nicht auf, das USB-Kabel ab- und wieder anstecken.</translation>
+    </message>
+    <message>
+        <source>Disconnected since {} ({}).</source>
+        <translation>Getrennt seit {} ({}).</translation>
+    </message>
+    <message>
+        <source>Disconnected.</source>
+        <translation>Getrennt.</translation>
+    </message>
+    <message>
+        <source>Running tasks go on in the charger but are not recorded. BattBench reconnects as soon as it is back.</source>
+        <translation>Laufende Vorgänge gehen im Ladegerät weiter, werden aber nicht aufgezeichnet. BattBench verbindet sich wieder, sobald es zurück ist.</translation>
+    </message>
+    <message>
+        <source>HTML page (*.html)</source>
+        <translation>HTML-Seite (*.html)</translation>
+    </message>
+    <message>
+        <source>PDF (*.pdf)</source>
+        <translation>PDF (*.pdf)</translation>
+    </message>
+    <message>
+        <source>Could not write the report: {}</source>
+        <translation>Der Bericht ließ sich nicht schreiben: {}</translation>
+    </message>
+    <message>
+        <source>Report saved: {}
+
+Open it now?</source>
+        <translation>Bericht gespeichert: {}
+
+Jetzt öffnen?</translation>
+    </message>
+    <message>
+        <source>Switching Bluetooth on again …</source>
+        <translation>Schalte Bluetooth wieder ein …</translation>
+    </message>
+    <message>
+        <source>BattBench-ESP connected: SkyRC chargers are only connected through it from now on (see &quot;+&quot;).</source>
+        <translation>BattBench-ESP verbunden: SkyRC-Ladegeräte werden ab jetzt nur noch darüber verbunden (siehe „+“).</translation>
+    </message>
+    <message>
+        <source>No data from slot {} yet.</source>
+        <translation>Noch keine Daten von Schacht {}.</translation>
+    </message>
+    <message>
+        <source>Start slot {} again with its current settings?</source>
+        <translation>Schacht {} mit seinen aktuellen Einstellungen neu starten?</translation>
+    </message>
+    <message>
+        <source>Only battery type, task and the currents come from the charger; the other values are defaults – please check them.</source>
+        <translation>Nur Akkutyp, Aufgabe und Ströme kommen vom Ladegerät; die übrigen Werte sind Vorgaben – bitte prüfen.</translation>
+    </message>
+    <message>
+        <source>Changes are used at the next start of slot {} and not saved as a profile.</source>
+        <translation>Änderungen gelten beim nächsten Start von Schacht {} und werden nicht als Profil gespeichert.</translation>
+    </message>
+    <message>
+        <source>A profile &quot;{}&quot; exists already. Save another one with the same name?</source>
+        <translation>Ein Profil „{}“ gibt es schon. Noch eines mit demselben Namen speichern?</translation>
     </message>
     <message>
         <source>no running session</source>
@@ -1147,6 +1791,90 @@
         <source>(empty)</source>
         <translation>(leer)</translation>
     </message>
+    <message>
+        <source>not reachable: {}</source>
+        <translation>nicht erreichbar: {}</translation>
+    </message>
+    <message>
+        <source>BattBench-ESP removed</source>
+        <translation>BattBench-ESP entfernt</translation>
+    </message>
+    <message>
+        <source>no longer connected to the BattBench-ESP</source>
+        <translation>nicht mehr mit dem BattBench-ESP verbunden</translation>
+    </message>
+    <message>
+        <source>catching up ({} readings)</source>
+        <translation>holt nach ({} Messwerte)</translation>
+    </message>
+    <message>
+        <source>ESP connected, charger not</source>
+        <translation>ESP verbunden, Ladegerät nicht</translation>
+    </message>
+    <message>
+        <source>Charger version:</source>
+        <translation>Version des Ladegeräts:</translation>
+    </message>
+    <message>
+        <source>connected through it</source>
+        <translation>darüber verbunden</translation>
+    </message>
+    <message>
+        <source>Operating system</source>
+        <translation>Betriebssystem</translation>
+    </message>
+    <message>
+        <source>Whole run</source>
+        <translation>Gesamter Verlauf</translation>
+    </message>
+    <message>
+        <source>Phase {}: {}</source>
+        <translation>Phase {}: {}</translation>
+    </message>
+    <message>
+        <source>Value</source>
+        <translation>Wert</translation>
+    </message>
+    <message>
+        <source>Result</source>
+        <translation>Ergebnis</translation>
+    </message>
+    <message>
+        <source>Overview</source>
+        <translation>Übersicht</translation>
+    </message>
+    <message>
+        <source>Software</source>
+        <translation>Software</translation>
+    </message>
+    <message>
+        <source>Chart</source>
+        <translation>Diagramm</translation>
+    </message>
+    <message>
+        <source>Details</source>
+        <translation>Details</translation>
+    </message>
+    <message>
+        <source>Explanations</source>
+        <translation>Erläuterungen</translation>
+    </message>
+    <message>
+        <source>Rating details</source>
+        <translation>Details zur Bewertung</translation>
+    </message>
+    <message>
+        <source>Charge and discharge phases</source>
+        <translation>Lade- und Entladephasen</translation>
+    </message>
+    <message>
+        <source>Created {} with BattBench {}</source>
+        <translation>Erstellt {} mit BattBench {}</translation>
+    </message>
+    <message>
+        <source>BattBench session report</source>
+        <translation>BattBench-Bericht zum Vorgang</translation>
+    </message>
 </context>
 <context>
     <name>data</name>
@@ -1183,8 +1911,68 @@
         <translation>wartet</translation>
     </message>
     <message>
+        <source>input voltage too low</source>
+        <translation>Eingangsspannung zu niedrig</translation>
+    </message>
+    <message>
+        <source>input voltage too high</source>
+        <translation>Eingangsspannung zu hoch</translation>
+    </message>
+    <message>
+        <source>contact lost</source>
+        <translation>Kontakt verloren</translation>
+    </message>
+    <message>
+        <source>time limit reached</source>
+        <translation>Zeitgrenze erreicht</translation>
+    </message>
+    <message>
+        <source>internal temperature too high</source>
+        <translation>Ladegerät zu heiß</translation>
+    </message>
+    <message>
+        <source>calibration failed</source>
+        <translation>Kalibrierung fehlgeschlagen</translation>
+    </message>
+    <message>
+        <source>internal resistance too high</source>
+        <translation>Innenwiderstand zu hoch</translation>
+    </message>
+    <message>
+        <source>wrong battery type</source>
+        <translation>falscher Akkutyp</translation>
+    </message>
+    <message>
         <source>reversed polarity</source>
         <translation>verpolt</translation>
+    </message>
+    <message>
+        <source>overload</source>
+        <translation>Überlast</translation>
+    </message>
+    <message>
+        <source>ADC error 1</source>
+        <translation>ADC-Fehler 1</translation>
+    </message>
+    <message>
+        <source>ADC error 2</source>
+        <translation>ADC-Fehler 2</translation>
+    </message>
+    <message>
+        <source>check voltage</source>
+        <translation>Spannung prüfen</translation>
+    </message>
+    <message>
+        <source>charger too hot</source>
+        <translation>Ladegerät zu heiß</translation>
+    </message>
+    <message>
+        <source>battery too hot</source>
+        <translation>Akku zu heiß</translation>
+    </message>
+    <message>
+        <source>short circuit</source>
+        <translation>Kurzschluss</translation>
     </message>
     <message>
         <source>charging</source>
@@ -1221,6 +2009,14 @@
     <message>
         <source>error</source>
         <translation>Fehler</translation>
+    </message>
+    <message>
+        <source>ready</source>
+        <translation>bereit</translation>
+    </message>
+    <message>
+        <source>pause</source>
+        <translation>Pause</translation>
     </message>
     <message>
         <source>running</source>
@@ -1299,6 +2095,18 @@
         <translation>gut</translation>
     </message>
     <message>
+        <source>stopped by the charger: {reason}, result incomplete</source>
+        <translation>vom Ladegerät beendet: {reason}, Ergebnis unvollständig</translation>
+    </message>
+    <message>
+        <source>the cell holds more than {mah} mAh (the capacity limit set on the charger)</source>
+        <translation>der Akku fasst mehr als {mah} mAh (die am Ladegerät eingestellte Kapazitätsgrenze)</translation>
+    </message>
+    <message>
+        <source>capacity limit reached</source>
+        <translation>Kapazitätsgrenze erreicht</translation>
+    </message>
+    <message>
         <source>suspicious</source>
         <translation>verdächtig</translation>
     </message>
@@ -1337,6 +2145,62 @@
     <message>
         <source>task {status}, result incomplete</source>
         <translation>Vorgang {status}, Ergebnis unvollständig</translation>
+    </message>
+    <message>
+        <source>unknown battery type</source>
+        <translation>unbekannter Akkutyp</translation>
+    </message>
+    <message>
+        <source>task not available for this battery type</source>
+        <translation>Vorgang für diesen Akkutyp nicht verfügbar</translation>
+    </message>
+    <message>
+        <source>unknown cycle order</source>
+        <translation>unbekannte Zyklus-Reihenfolge</translation>
+    </message>
+    <message>
+        <source>discharge current 50 - 2000 mA</source>
+        <translation>Entladestrom 50 – 2000 mA</translation>
+    </message>
+    <message>
+        <source>cycles 1 - 99</source>
+        <translation>Zyklen 1 – 99</translation>
+    </message>
+    <message>
+        <source>the cut-off voltage must be below the charge voltage</source>
+        <translation>die Entladeschlussspannung muss unter der Ladeschlussspannung liegen</translation>
+    </message>
+    <message>
+        <source>charge current 50 - 5000 mA</source>
+        <translation>Ladestrom 50 – 5000 mA</translation>
+    </message>
+    <message>
+        <source>capacity limit off or 100 - 50000 mAh</source>
+        <translation>Kapazitätsgrenze aus oder 100 – 50000 mAh</translation>
+    </message>
+    <message>
+        <source>unknown Eneloop type</source>
+        <translation>unbekannter Eneloop-Typ</translation>
+    </message>
+    <message>
+        <source>off</source>
+        <translation>aus</translation>
+    </message>
+    <message>
+        <source>low</source>
+        <translation>niedrig</translation>
+    </message>
+    <message>
+        <source>high</source>
+        <translation>hoch</translation>
+    </message>
+    <message>
+        <source>once</source>
+        <translation>einmal</translation>
+    </message>
+    <message>
+        <source>repeated</source>
+        <translation>wiederholt</translation>
     </message>
 </context>
 </TS>

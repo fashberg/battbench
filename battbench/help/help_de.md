@@ -144,8 +144,14 @@ MC3000 und Maha MH-C9000.
 
 ### Bedienung
 - **Ladegeräte-Reiter** oben: Name, Eingangsspannung, Verbindung (USB-/Bluetooth-Symbol) und eine LED pro Schacht –
-  grau leer, orange lädt, pink entlädt, blau Analyse/Aktivierung/Zyklus, grün fertig, rot Fehler. Der Reiter „+“
+  grau leer, orange bereit (Akku eingelegt, kein Vorgang), gelb lädt, rot entlädt, blau Analyse/Aktivierung/Zyklus,
+  grün fertig, rot blinkend Fehler. Der Reiter „+“
   zeigt die unterstützten Ladegeräte, die Bluetooth-Suche und wie der A4 Air gelesen wird.
+- **Ladegerät offline**: Ist ein Ladegerät abgesteckt oder antwortet es 30 Sekunden lang nicht, liegt ein roter
+  Hinweis über seinen Kacheln und sein Reiter zeigt *getrennt* / *keine Antwort*. Das Ladegerät lädt eventuell weiter,
+  aufgezeichnet wird in der Zeit aber nichts. BattBench versucht es weiter (öffnet die USB-Verbindung jede Minute neu),
+  der Hinweis verschwindet von selbst, sobald wieder Messwerte kommen. Bleibt er, das USB-Kabel ab- und wieder
+  anstecken.
 - **Schacht-Kacheln**: Werte des Schachts; der Balken zeigt den Fortschritt des Ladegeräts, seine Pfeile laufen beim
   Laden Richtung 100 % und beim Entladen Richtung 0 %. Ein Klick zeigt den Vorgang des Schachts; ist ein Akku
   zugeordnet, öffnet sich unten der Tab *Akkus* mit seinem Verlauf.
@@ -155,6 +161,12 @@ MC3000 und Maha MH-C9000.
   zwei Dritteln durch die Zeit (im oberen Drittel weiterhin Rahmen). Ein Rechtsklick zoomt heraus; das Haus-Symbol
   (unten links) zeigt wieder alles. Bei der letzten Entladung ist das Plateau (20–80 %) dunkler hinterlegt, mit der
   mittleren Spannung dort (gestrichelt) und der Spannung nach 5 % (Punkt).
+- **Bericht exportieren …** (Knopf über der Bewertung, oder Rechtsklick auf einen Vorgang in den Tabellen):
+  Bewertung, Akku, Ladegerät, Hauptdaten und Softwareversionen, das Diagramm, die Details, die Phasenliste, ein
+  Diagramm für jede Lade-/Entladephase (lässt sich weglassen) und am Ende die Erläuterungen der Werte und der
+  Abschnitt *Bewertung* dieser Anleitung (*Details zur Bewertung*). Als HTML-Seite mit eingebetteten Diagrammen oder
+  als PDF (DIN A4, eine Überschrift steht nie allein am Seitenende; die Erläuterungen beginnen auf einer neuen Seite). Die Sprache ist
+  die der App oder im Dialog gewählt. Die Diagramme tragen oben links „fashberg/battbench“.
 - **Tabellen** (unten): Klick auf einen Spaltentitel sortiert; der Trichter im Spaltentitel filtert wie in einer
   Tabellenkalkulation. *Vorgänge* listet alle Vorgänge, *Akkus* deine Akkus mit ihrem Verlauf rechts (ein Klick auf
   einen Akku zeigt seinen letzten Vorgang im Diagramm, ein Klick auf einen Vorgang im Verlauf diesen), *Modelle* die
@@ -164,6 +176,35 @@ MC3000 und Maha MH-C9000.
 - **Löschen**: Rechtsklick (oder Entf) auf Vorgänge, Akkus oder Modelle (Strg / Umschalt wählt mehrere). Gelöschte Einträge werden
   nur ausgeblendet; in den *Einstellungen* lassen sie sich wieder anzeigen (grau) – erneutes Löschen entfernt sie
   endgültig.
+
+- **Profile (SkyRC MC5000)**: Der Tab *Profile* speichert Ladeprogramme – Akkutyp, Vorgang (Laden, Entladen,
+  Zyklus …), Ströme, Kapazitätsgrenze, Spannungen, Zyklen und ihre Reihenfolge, Pausen. Jeder Wert wird aus den
+  Stufen gewählt, die die SkyRC-App anbietet (z. B. Ströme in 50-mA-Schritten, Nachladen bei NiMH aus oder ab
+  1,30 V); ein anderer Akkutyp, Vorgang oder Eneloop-Typ (Std / Pro / Lite / Plus AA, AAA, C, D) setzt die Vorgaben
+  der App dafür. *Neu* und *Kopieren* öffnen das Profil in einem eigenen Fenster. Ein MC5000 (per Bluetooth
+  oder über ein BattBench-ESP verbunden) bekommt rechts neben seinen Kacheln die *Ladegerätsteuerung*: Kachel
+  anklicken wählt ihren Schacht, Strg + Klick mehrere; das Feld zeigt, was dort mit welchem Programm läuft (und
+  welches gespeicherte Profil das ist), startet das gewählte Profil auf den gewählten Schächten und stoppt sie.
+  *Aktuelle Einstellungen* in der Profilliste startet jeden Schacht neu mit seinen eigenen Einstellungen. Der Knopf
+  *Profil* enthält die Profilaktionen: *Neu aus
+  aktuellen Einstellungen …* öffnet ein neues Profil mit den aktuellen Einstellungen des Schachts als Vorlage, *Neu …*
+  eines mit den Vorgaben der App (wie im Tab *Profile*); *Bearbeiten …* bearbeitet das
+  gewählte Profil (*Klonen* speichert es als neues) – bei *Aktuelle Einstellungen* ändert es sie nur für den nächsten
+  Start (*Verwenden*), oder *Neues Profil erstellen* speichert sie. Das Ladegerät kann
+  sein Programm nicht vollständig melden: BattBench kennt es bei Vorgängen, die es selbst gestartet hat; sonst zeigt
+  es Akkutyp, Vorgang und den Lade-/Entladestrom, den das Ladegerät meldet (in Schritten von 0,1 A), und die
+  passenden Profile. Dasselbe steht im Rechtsklick-Menü eines Schachts. Das Zahnrad in der Titelzeile öffnet die
+  Einstellungen des Ladegeräts (Tastenton, Benachrichtigungston, Abschlusston, LCD-Licht, Bildschirm-Timeout):
+  vom Gerät gelesen und dorthin gespeichert. Darunter die **Bluetooth-Verbindung**: Das Ladegerät nimmt nur eine an;
+  für die SkyRC-App geben *5 min pausieren* oder *Ausschalten* es frei (für BattBenchs eigenes Bluetooth und jedes
+  BattBench-ESP zugleich; ausgeschaltet bleibt auch nach einem Neustart aus), *Einschalten* verbindet wieder; über
+  ein BattBench-ESP öffnet der Dialog auch dessen Webseite. Solange Bluetooth pausiert oder aus ist, steht das auf den
+  Kacheln (bei einer Pause mit der Restzeit und einem Knopf zum Fortsetzen) statt „Ladegerät offline“; das Zahnrad
+  geht dann trotzdem. Eine Pause von der Webseite des ESP erscheint hier ebenso. Wie BattBench SkyRC-Ladegeräte
+  verbindet, steht im Reiter „+“ (*SkyRC-Ladegeräte verbinden*): *Automatisch* wechselt zu *Nur über ein
+  BattBench-ESP*, sobald einmal eines verbunden war; dann lässt das Bluetooth dieses PCs sie in Ruhe.
+  Nur dabei schickt BattBench etwas, das ändert, was ein Ladegerät tut, und erst nach deiner Bestätigung. Ein
+  Vorgang in einem angekreuzten Schacht wird ersetzt und beginnt von vorn.
 
 ### Unterstützte Ladegeräte
 | Ladegerät | Verbindung | Schächte | Getestet |
@@ -185,6 +226,9 @@ zeigen Größe und Anzahl der Einträge. Es wird nichts irgendwohin gesendet.
   Beenden und, solange es läuft, alle 12 Stunden. Erhalten bleiben die letzten 10 Sicherungen und dazu die neueste von
   jedem der letzten 20 Tage, 8 Wochen und 24 Monate; das alles lässt sich in den *Einstellungen* ändern. Zum
   Zurückspielen eine entpacken (z. B. mit 7-Zip) und `battbench.db` ersetzen, während BattBench geschlossen ist.
+- **Log-Datei**: `battbench.log` neben der Datenbank (Link im Reiter *Info*) hält Verbindungen, Ladegeräte, die nicht
+  mehr antworten, Neuverbindungen und Fehler fest – hilfreich, wenn etwas schiefging. Mit `--debug` gestartet steht
+  dort jede einzelne unbeantwortete Abfrage.
 - **Alte Messwerte komprimieren** (*Einstellungen*, standardmäßig an): Messwerte, die älter als zwei Wochen sind,
   werden automatisch auf einen pro Minute reduziert – pro Minute der Median von Spannung, Strom, Innenwiderstand und
   Temperatur und die letzten Zählerstände; Vorgänge und Bewertungen bleiben unverändert, nur die Kurven alter Vorgänge

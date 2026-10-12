@@ -6,6 +6,7 @@
   phase, mode names); they are translated only when shown, with tr_data().
 """
 import os
+from contextlib import contextmanager
 
 try:
     from PySide6.QtCore import QCoreApplication, QLibraryInfo, QLocale, QTranslator
@@ -48,3 +49,22 @@ def install(app, lang):
         if t.load(QLocale(lang), name, '_', path):
             app.installTranslator(t)
             app.translators.append(t)
+
+
+@contextmanager
+def language(lang):
+    """Texts in lang for a while (e.g. a report in another language than the UI), then the UI language again."""
+    app = QCoreApplication.instance()
+    old = current
+    if lang == old or app is None:
+        yield
+        return
+    for t in getattr(app, 'translators', []):
+        app.removeTranslator(t)
+    install(app, lang)
+    try:
+        yield
+    finally:
+        for t in app.translators:
+            app.removeTranslator(t)
+        install(app, old)

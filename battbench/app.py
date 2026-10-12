@@ -6,29 +6,37 @@ Start:  .venv\\Scripts\\python -m battbench [--offline] [--db battbench.db]   (o
   --offline only view the database
   --a4 usb|bt|both  how the A4 Air is read (default: last choice in the app, else both); --no-bt: no Bluetooth at all
   --lang auto|en|de user interface language (default: last choice in the app, else the system language)
+  --debug           detailed log (battbench.log next to the database), also to stderr
 """
 import argparse
+import json
+import logging
 import os
 import sqlite3
 import queue
+import re
 import sys
 import threading
 import time
 from collections import deque
 from dataclasses import asdict
+from html import escape as html_escape
 from datetime import datetime
 
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import (QByteArray, QEvent, QLocale, QObject, QPointF, QRect, QRectF, QRegularExpression,
-                            QSettings, QSize, QSortFilterProxyModel, Qt, QThread, QTimer, Signal)
-from PySide6.QtGui import (QBrush, QColor, QFont, QGuiApplication, QIcon, QImage, QKeySequence, QPainter, QPen,
-                           QPixmap, QRegularExpressionValidator, QShortcut)
+                            QSettings, QSize, QSortFilterProxyModel, QStandardPaths, Qt, QThread, QTimer, QUrl,
+                            Signal)
+from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QGuiApplication, QIcon, QImage, QKeySequence,
+                           QPainter, QPen, QPixmap, QRegularExpressionValidator, QShortcut)
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter, QDialog,
-                               QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView,
+                               QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox,
+                               QHBoxLayout, QHeaderView,
                                QProgressDialog,
-                               QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit,
+                               QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
+                               QMessageBox, QPlainTextEdit,
                                QProxyStyle, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStackedWidget, QSplitter,
                                QStyle,
                                QStyledItemDelegate, QStyleFactory, QStyleOptionViewItem, QTabWidget, QTableWidget,
@@ -39,16 +47,19 @@ from .version import AUTHOR, SOURCE, WEBSITE, full_version
 from .autofilter import FILTER_ROLE, SEARCH_ROLE, SORT_ROLE, AutoFilter, SortItem
 from .db import (BACKUP_DEFAULTS, COMPRESS_AFTER, DB, SESSION_FIELDS, SampleThinner, close_and_backup, prune_backups,
                  write_backup)
-from .device import UsbInfo, open_charger, usb_devices
+from .device import UsbInfo, open_charger, present, usb_devices
 from .device_ble import BleManager
-from . import i18n
+from .device_net import EspFinder, NetHost
+from . import mc5000, report
+from . import i18n, logs
 from .i18n import LANGUAGES, install, pick_language, tr, tr_data
 from .model import DONE as DONE_MODES
-from .model import (ABORTED, CATEGORIES, CHARGE, DISCHARGE, FINISHED, GAP_SECS, GRADES, MODE_NAMES, NO_GRADE, NOMINAL,
-                    PHASE_MIN_MA, REMOVED, RES_QUALITY, RUNNING, TASKS, USES, Session, Tracker, discharge_curve,
-                    health, measuring, note_text, rate_values, res_level)
+from .model import (ABORTED, CATEGORIES, CHARGE, DISCHARGE, FINISHED, GAP_SECS, GRADES, IDLE, MODE_NAMES, NO_GRADE,
+                    NOMINAL, PAUSE, PHASE_MIN_MA, REMOVED, RES_QUALITY, RUNNING, TASKS, USES, Session, Tracker,
+                    discharge_curve, health, measuring, note_text, rate_values, res_level)
 
 PKG = os.path.dirname(os.path.abspath(__file__))
+log = logging.getLogger('battbench.app')
 ICON = os.path.join(PKG, 'resources', 'battbench.svg')
 
 
@@ -75,6 +86,7 @@ def default_db():
 
 # how the A4 Air is read; 'both': Bluetooth while connected, USB otherwise
 A4_MODES = ('both', 'bt', 'usb')
+SKYRC_MODES = ('auto', 'esp', 'direct')
 
 
 def a4_mode_names():
@@ -82,10 +94,31 @@ def a4_mode_names():
             'usb': tr('USB only')}
 
 
-COLORS = {'charge': '#f28c28', 'discharge': '#e75480', 'analysis': '#3a7bd5', 'done': '#2e9e4f',
-          'empty': '#9a9a9a', 'error': '#d0342c'}
+def skyrc_mode_names():
+    return {'auto': tr('Automatic (BattBench-ESP or Bluetooth of this PC)'), 'esp': tr('Only through a BattBench-ESP'),
+            'direct': tr('Only over Bluetooth of this PC')}
+
+
+def skyrc_unused_names():
+    """Why this PC's Bluetooth plays no part for SkyRC chargers (Worker._local_bt)."""
+    return {'esp': tr('not used (SkyRC chargers only through a BattBench-ESP)'),
+            'off': tr('off (started with --no-bt)'), 'not ready': tr('not ready (Bluetooth search fails), ignored')}
+
+
+COLORS = {'charge': '#e0a000', 'discharge': '#d0342c', 'analysis': '#3a7bd5', 'done': '#2e9e4f',
+          'empty': '#9a9a9a', 'idle': '#f28c28', 'error': '#d0342c'}
+BLINK_MS = 500                    # error slots blink (title bar, status bar, LED in the charger tab)
 GRADE_COLORS = dict(zip(GRADES + (NO_GRADE,), ('#2e9e4f', '#6aa84f', '#e69138', '#d0342c', '#d0342c', '#888888')))
 PHASE_COLORS = {CHARGE: COLORS['charge'], DISCHARGE: COLORS['discharge']}
+
+
+def is_idle(s):
+    """Live sample of an occupied slot without a task (SkyRC: cell in, ready); mode 0 otherwise means empty."""
+    return s['mode'] == 0 and s['size'] != 'empty' and s['mv'] > 0
+
+
+def sample_color(s):
+    return COLORS['idle'] if is_idle(s) else mode_color(s['mode'], s['ma'])
 
 
 def mode_color(mode, ma):
@@ -95,13 +128,17 @@ def mode_color(mode, ma):
         return COLORS['error']
     if mode in (4, 6, 8, 10, 12, 14):
         return COLORS['done']
-    if mode in (9, 11, 13):
-        return COLORS['analysis']
+    if mode in (9, 11, 13):                       # discharging is red in every task
+        return COLORS['discharge'] if ma < 0 else COLORS['analysis']
     return COLORS['discharge'] if ma < 0 else COLORS['charge']
 
 
 def fmt_t(t):
     return datetime.fromtimestamp(t).strftime(tr('%b %d, %H:%M')) if t else ''
+
+
+def hms(t):
+    return datetime.fromtimestamp(t).strftime('%H:%M:%S') if t else ''
 
 
 # connection symbols, drawn in the text colour of the current palette (light and dark theme)
@@ -112,12 +149,21 @@ VIA_SVG = {
            '<rect x="15.5" y="7" width="3" height="3" fill="{c}"/><circle cx="12" cy="19.5" r="2" fill="{c}"/></svg>',
     'ble': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{c}" stroke-width="1.8" '
            'stroke-linecap="round" stroke-linejoin="round"><path d="M7 7l10 10-5 5V2l5 5L7 17"/></svg>',
+    'net': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="{c}" stroke-width="1.8" '
+           'stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0'
+           'M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1.4" fill="{c}"/></svg>',
 }
-VIA_NAME = {'usb': 'USB', 'ble': 'Bluetooth'}
+VIA_NAME = {'usb': 'USB', 'ble': 'Bluetooth', 'net': 'BattBench-ESP'}
+
+
+def via_text(on):
+    """Connections of a charger for tooltips and tables, e.g. "BattBench-ESP (10.10.200.168)"."""
+    return ' + '.join(VIA_NAME[v] + (f" ({on['net_host']})" if v == 'net' and on.get('net_host') else '')
+                      for v in on.get('vias', ()))
 
 
 def via_pixmap(vias, color, size=14):
-    """USB and / or Bluetooth symbol side by side."""
+    """USB / Bluetooth / network symbols side by side."""
     pm = QPixmap(size * len(vias) + 2 * max(len(vias) - 1, 0), size)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
@@ -169,7 +215,7 @@ def note_of(d):
     nominal = d['nominal'] or NOMINAL.get(d['size'], 0)
     return note_text(rate_values(d['discharge_mah'], nominal, d['charge_mah'], d['res_min'], d['status'],
                                  is_measuring(d), d['chem'], d.get('v_start'), d.get('v_mid'), d.get('early_drop'),
-                                 d.get('res_est'))[1], tr_data)
+                                 d.get('res_est'), d.get('stop_reason') or '')[1], tr_data)
 
 
 def grade_cell(grade, ohi):
@@ -199,19 +245,26 @@ def session_info(s: Session):
                 status=s.status, nominal=s.nominal or NOMINAL.get(s.size, 0), discharge_mah=s.discharge_mah,
                 charge_mah=s.charge_mah, res_first=s.res_first, res_min=s.res_min, res_last=s.res_last,
                 temp_max=s.temp_max, grade=grade, note=note, ohi=ohi, v_start=s.v_start, v_mid=s.v_mid,
-                early_drop=s.early_drop, res_est=s.res_est,
+                early_drop=s.early_drop, res_est=s.res_est, stop_reason=s.stop_reason, paused=s.paused,
                 phases=[(p.kind, p.start, p.end, p.mah) for p in s.phases])
 
 
 # ======================================================================= worker
+STALE_SECS = 30           # no readings from a connected charger for this long -> shown as offline
+VIA_ORDER = ('ble', 'net', 'usb')    # data is taken from the first one of a charger's connections that delivers
+
+
 def via_of(r):
-    """'ble' for a Bluetooth reader, 'usb' for a USB one."""
-    return 'ble' if r.usb.path.startswith(b'ble:') else 'usb'
+    """'ble' for a Bluetooth reader, 'net' for a charger behind a BattBench-ESP, 'usb' for a USB one."""
+    return 'ble' if r.usb.path.startswith(b'ble:') else 'net' if r.usb.path.startswith(b'net:') else 'usb'
 
 
 class Reader(threading.Thread):
     """One per connected charger: opens it, then reads all slots once per second and hands the
-    samples to the worker. Only USB I/O here; the worker owns tracker and database."""
+    samples to the worker. Only USB I/O here; the worker owns tracker and database.
+    A charger that stops answering while still plugged in posts empty batches (the worker shows it as offline);
+    after REOPEN_SECS its HID handle is opened again, and again every REOPEN_SECS."""
+    REOPEN_SECS = 60
 
     def __init__(self, usb: UsbInfo, out: queue.Queue):
         super().__init__(daemon=True)
@@ -225,6 +278,7 @@ class Reader(threading.Thread):
         try:
             self.charger = open_charger(self.usb)
         except Exception as e:
+            log.warning('opening %s (%s) failed: %s', self.usb.product, self.usb.path.decode(errors='replace'), e)
             self.out.put(('fail', self, str(e)))
             return
         self.out.put(('open', self))
@@ -232,10 +286,16 @@ class Reader(threading.Thread):
             self.charger.close()
             return
         c = self.charger
+        self.name = threading.current_thread().name = f'{c.label}-usb'
+        log.info('%s opened: %s, key %s, HID %s', c.label, c.version, c.key, self.usb.path.decode(errors='replace'))
+        last_ok = next_reopen = time.time()
+        quiet = False                                   # the charger answers nothing at all
+        missed, next_report = {}, time.time() + 60      # slot -> [count, last reason], summed up once a minute
         while self.running:
             t0 = time.time()
+            batch, in_mv = [], None
             try:
-                batch = []
+                silent = 0
                 for slot in range(c.slots):
                     for _ in range(2):                  # one retry for a lost answer
                         s = c.read_slot(slot)
@@ -243,14 +303,48 @@ class Reader(threading.Thread):
                             s.dev = self.dev
                             batch.append(s)
                             break
-                self.out.put(('data', self, batch, c.input_mv()))
-            except Exception as e:                      # unplugged / glitch -> worker reconnects
-                self.out.put(('lost', self, repr(e)))
-                break
+                        log.debug('%s slot %d: %s', c.label, slot + 1, c.why)
+                    if s:
+                        silent = 0
+                        continue
+                    m = missed.setdefault(slot + 1, [0, ''])
+                    m[0], m[1] = m[0] + 1, c.why
+                    silent += 1
+                    if not batch and silent >= 2:       # charger silent: don't wait for every slot
+                        break
+                if batch:
+                    in_mv = c.input_mv()
+            except Exception as e:
+                if not present(self.usb.path):          # unplugged -> worker reconnects when it is back
+                    log.warning('%s unplugged: %r', c.label, e)
+                    self.out.put(('lost', self, repr(e)))
+                    break
+                log.warning('%s: error while reading (still plugged in): %r', c.label, e)
+            if batch:
+                if quiet:
+                    log.warning('%s answers again after %.0f s', c.label, t0 - last_ok)
+                last_ok, quiet = t0, False
+            elif not quiet and t0 - last_ok > 5:
+                log.warning('%s: no answer since %s (%s)', c.label, hms(last_ok), c.why)
+                quiet = True
+            self.out.put(('data', self, batch, in_mv))
+            if t0 >= next_report:
+                if missed:
+                    log.info('%s: unanswered queries in the last minute: %s', c.label,
+                             ', '.join(f'slot {k} {n}x ({why})' for k, (n, why) in sorted(missed.items())))
+                missed, next_report = {}, t0 + 60
+            if quiet and t0 - last_ok > self.REOPEN_SECS and t0 >= next_reopen:
+                next_reopen = t0 + self.REOPEN_SECS     # USB link still there: open the HID handle again
+                try:
+                    c.reopen()
+                    log.warning('%s: HID handle reopened', c.label)
+                except Exception as e:
+                    log.warning('%s: reopening the HID handle failed: %r', c.label, e)
             end = t0 + 1.0
             while self.running and time.time() < end:
                 time.sleep(0.05)
         c.close()
+        log.info('%s reader stopped', c.label)
 
 
 class Worker(QObject):
@@ -260,14 +354,26 @@ class Worker(QObject):
     status = Signal(str)
     sessions_changed = Signal()
     data_changed = Signal()       # readings compressed: statistics and curves are out of date
+    command_result = Signal(bool, str, object)   # charger command done: ok, message, dict(dev, slots, prog, pid)
+    charger_info = Signal(object)    # MC5000 answer: dict(kind 'summary' / 'settings', dev, slot, data, error, text)
+                                                  # of a started program (else None)
 
-    def __init__(self, db_path, source, a4='both', bt=True):
+    skyrc_changed = Signal(str)   # SKYRC_MODES key: switched to 'esp' by itself (first BattBench-ESP connection)
+
+    def __init__(self, db_path, source, a4='both', bt=True, esp=(), esp_auto=True, skyrc='auto', skyrc_chosen=True):
         super().__init__()
         self.db_path = db_path
+        self.skyrc = skyrc        # SKYRC_MODES key: how SkyRC chargers are connected
+        self.skyrc_chosen = skyrc_chosen   # False: still the default, the first BattBench-ESP makes it 'esp'
         self.source = source      # 'device' / 'offline'
         self.a4 = a4              # A4_MODES key: how the A4 Air is read
         self.bt = bt              # look for Bluetooth chargers (A4 / A8 / C4 Air, MC5000)
         self.ble = None
+        self.esp = list(esp)      # host names / addresses of BattBench-ESP bridges entered by hand
+        self.esp_auto = esp_auto  # also the ones found by mDNS
+        self.finder = None        # EspFinder
+        self.found = {}           # ESP id -> host of the bridges found so far (kept when one search misses it)
+        self.nets = {}            # host -> NetHost
         self.running = True
         self.cmds = queue.Queue()
         self.inbox = queue.Queue()
@@ -277,12 +383,15 @@ class Worker(QObject):
         self.conns = {}           # dev -> {'usb' / 'ble': reader}: a charger may be connected both ways
         self.same = {}            # (dev, dev) -> deque of reading comparisons (True = same readings)
         self.merged = []          # devices merged into another one since the last emit (for the GUI)
+        self.bt_addrs, self.bt_addrs_t = {}, 0     # dev -> Bluetooth address, read at
+        self.bt_mirrored = {}     # address -> pause taken over from a BattBench-ESP (_bt_mirror)
 
     def stop(self):
         self.running = False
 
     # ---------------------------------------------------------------- setup
     def run(self):
+        threading.current_thread().name = 'worker'     # in the log
         self.db = DB(self.db_path)
         self.tracker = Tracker()
         self.status.emit(tr('Loading database …'))
@@ -314,6 +423,7 @@ class Worker(QObject):
         dirty = False
         self._status()
         self._apply_a4()
+        self._apply_esp()
         while self.running:
             self._commands()
             self._auto_compress()
@@ -322,11 +432,16 @@ class Worker(QObject):
             if now >= nxt_scan:
                 nxt_scan = now + 3
                 self._scan()
+                if self.finder and any(self.found.get(k) != v['host'] for k, v in self.finder.found.items()):
+                    self._apply_esp()
             try:
                 msg = self.inbox.get(timeout=0.2)
             except queue.Empty:
                 msg = None
-            if msg:
+            if msg and msg[0] == 'cursor':           # a BattBench-ESP: readings up to here are stored
+                self.db.set_setting(msg[1], msg[2])
+                dirty = True
+            elif msg:
                 kind, r = msg[0], msg[1]
                 if kind == 'open':
                     c = r.charger
@@ -335,8 +450,15 @@ class Worker(QObject):
                         last = self.tracker.last.get((r.dev, slot))
                         if last and now - last.t < GAP_SECS:
                             c.seed(slot, last)
+                    r.last_ok = now
                     self.conns.setdefault(r.dev, {})[via_of(r)] = r
                     self._update_online(r.dev)
+                    log.info('device %d: %s connected via %s', r.dev, c.version, via_of(r))
+                    if via_of(r) == 'net' and self.skyrc == 'auto' and not self.skyrc_chosen:
+                        self.skyrc, self.skyrc_chosen = 'esp', True     # from now on only through the ESP
+                        log.info('SkyRC chargers: BattBench-ESP only from now on')
+                        self._apply_a4()
+                        self.skyrc_changed.emit('esp')
                     r.ready.set()
                     self._status()
                     self.sessions_changed.emit()        # new device name in the tables
@@ -344,6 +466,10 @@ class Worker(QObject):
                     _, _, batch, in_mv = msg
                     if r.dev is None or self.conns.get(r.dev, {}).get(via_of(r)) is not r:
                         continue                        # reader of a device that was merged / dropped
+                    if via_of(r) == 'net':              # never back in time (readings fetched again)
+                        batch = [s for s in batch if not (last := self.latest.get((s.dev, s.slot))) or s.t > last.t]
+                    if batch:
+                        r.last_ok = now
                     self._compare(r.dev, batch)
                     if self.online[r.dev]['via'] != via_of(r):
                         continue                        # second connection: data comes from the better one
@@ -362,8 +488,12 @@ class Worker(QObject):
                         self.skip[r.usb.path] = msg[2]
                     self._drop(r)
                     why = tr('connection lost') if kind == 'lost' else msg[2]
+                    log.warning('%s %s via %s: %s', r.charger.label if r.charger else r.usb.product, kind,
+                                via_of(r), msg[2])
                     self._status(f"{r.charger.label if r.charger else r.usb.product}: {why}")
                     dirty = True
+            if self._check_stale(now):
+                dirty = True
             if self.tracker.closed or now >= nxt_save:  # closed sessions: save at once
                 self.db.save_dirty(self.tracker)
                 nxt_save = now + 10
@@ -376,6 +506,10 @@ class Worker(QObject):
             r.running = False
         if self.ble:
             self.ble.stop()
+        for h in self.nets.values():
+            h.stop()
+        if self.finder:
+            self.finder.running = False
         self.db.add_samples(thinner.flush())
         self.db.save_dirty(self.tracker)
 
@@ -402,9 +536,12 @@ class Worker(QObject):
         read: 'usb' -> no Bluetooth connection to it, 'bt' -> no USB reader for it."""
         if self.bt and not (self.ble and self.ble.is_alive()):
             self.ble = BleManager(self.inbox, lambda text: self._status(text))
+            for addr in self._bt_off():                 # switched off for the SkyRC app, kept over a restart
+                self.ble.hold_charger(addr, None)
             self.ble.start()
         if self.ble:
-            self.ble.ignore = {'A4Air'} if self.a4 == 'usb' else set()
+            self.ble.ignore = ({'A4Air'} if self.a4 == 'usb' else set()) | \
+                ({'SkyRC'} if self.skyrc == 'esp' else set())   # SkyRC only through the BattBench-ESP
             for r in list(self.ble.active.values()):
                 if r.model in self.ble.ignore:
                     r.running = False                   # its connection posts 'lost' when it ends
@@ -415,18 +552,76 @@ class Worker(QObject):
                 self._drop(r)
         self._status()
 
-    # ---------------------------------------------------------------- connections (USB / Bluetooth)
-    def _update_online(self, dev):
-        """online[dev] from its connections; data is taken from Bluetooth when there is both (more values)."""
+    def _apply_esp(self):
+        """One NetHost per BattBench-ESP entered by hand and per one found by mDNS (unless it is one of those entered,
+        same id); removed ones end their chargers' connections. A found one whose address changed moves along."""
+        if self.skyrc == 'direct':                      # SkyRC only over this PC's Bluetooth: no ESP
+            if self.finder:
+                self.finder.running = False
+                self.finder, self.found = None, {}
+            for host in list(self.nets):
+                self.nets.pop(host).stop()
+            return
+        if self.esp_auto and not (self.finder and self.finder.is_alive()):
+            self.finder = EspFinder()
+            self.finder.start()
+        elif not self.esp_auto and self.finder:
+            self.finder.running = False
+            self.finder, self.found = None, {}
+        if self.finder:
+            for k, v in self.finder.found.items():
+                if self.found.get(k) != v['host']:
+                    log.info('BattBench-ESP %s found at %s', k, v['host'])
+                    self.found[k] = v['host']
+        manual = {n.esp_id for h, n in self.nets.items() if h in self.esp and n.esp_id}
+        auto = {host for k, host in self.found.items() if k not in manual and host not in self.esp}
+        wanted = set(self.esp) | auto
+        for host in [h for h in self.nets if h not in wanted]:
+            self.nets.pop(host).stop()
+        cursors = {k: int(v) for k, v in self.db.con.execute("SELECT key, value FROM settings WHERE key LIKE 'esp:%'")}
+        for host in sorted(wanted):
+            if host not in self.nets:
+                self.nets[host] = NetHost(host, self.inbox, cursors)
+                self.nets[host].auto = host in auto
+                self.nets[host].start()
+
+    # ---------------------------------------------------------------- connections (USB / Bluetooth / network)
+    def _update_online(self, dev, now=None):
+        """online[dev] from its connections; data is taken from Bluetooth when there is both (more values), unless
+        only the USB connection still delivers readings."""
         conns = self.conns.get(dev)
         if not conns:
             self.online.pop(dev, None)
             self.conns.pop(dev, None)
             return
-        via = 'ble' if 'ble' in conns else 'usb'
+        fresh = [v for v, r in conns.items() if not self._stale(r, now)]
+        via = next(v for v in VIA_ORDER if v in (fresh or conns))
         old = self.online.get(dev, {})
         self.online[dev] = dict(version=conns[via].charger.version, in_mv=old.get('in_mv'), via=via,
-                                vias=sorted(conns))
+                                vias=sorted(conns), stale=None if fresh else max(r.last_ok for r in conns.values()),
+                                net_host=conns['net'].host if 'net' in conns else None)
+
+    def _stale(self, r, now=None):
+        """No readings from this connection for STALE_SECS (charger does not answer, or its reader hangs)."""
+        return (now or time.time()) - r.last_ok > STALE_SECS
+
+    def _check_stale(self, now):
+        """Update online[dev]['stale'] (time of the last reading, None = answering). True if one changed."""
+        changed = False
+        for dev in list(self.online):
+            old = self.online[dev].get('stale')
+            self._update_online(dev, now)
+            new = self.online[dev].get('stale')
+            if (old is None) != (new is None):
+                changed = True
+                label = self.conns[dev][self.online[dev]['via']].charger.label
+                if new is None:
+                    log.warning('device %d (%s): readings again (offline since %s)', dev, label, hms(old))
+                    self._status(tr('{}: answering again').format(label))
+                else:
+                    log.warning('device %d (%s): offline, no readings since %s', dev, label, hms(new))
+                    self._status(tr('{}: no answer since {}').format(label, hms(new)))
+        return changed
 
     def _drop(self, r):
         if r.dev is not None and self.conns.get(r.dev, {}).get(via_of(r)) is r:
@@ -492,7 +687,7 @@ class Worker(QObject):
         cur = {k: session_info(s) for k, s in self.tracker.current.items()}
         live = {k: asdict(s) for k, s in self.latest.items()}
         self.cycle.emit(dict(live=live, sessions=cur, devices={k: dict(v) for k, v in self.online.items()},
-                             merged=self.merged))
+                             merged=self.merged, bt_holds=self._bt_holds()))
         self.merged = []
 
     def _auto_backup(self):
@@ -551,8 +746,23 @@ class Worker(QObject):
                 self.a4 = cmd[1]
                 if self.source != 'offline':
                     self._apply_a4()
+            elif cmd[0] == 'esp':
+                self.esp, self.esp_auto = list(cmd[1]), cmd[2]
+                if self.source != 'offline':
+                    self._apply_esp()
+            elif cmd[0] == 'skyrc':
+                self.skyrc, self.skyrc_chosen = cmd[1], True
+                if self.source != 'offline':
+                    self._apply_a4()
+                    self._apply_esp()
             elif cmd[0] == 'label':
                 self.db.set_session_meta(cmd[1], label=cmd[2])
+            elif cmd[0] == 'mc5000':
+                self._mc5000(*cmd[1:])
+            elif cmd[0] == 'mc5000_ask':
+                self._mc5000_ask(*cmd[1:])
+            elif cmd[0] == 'bt':
+                self._bt(*cmd[1:])
             elif cmd[0] == 'battery':
                 b = self.db.battery(cmd[1])
                 if b and b['capacity']:
@@ -562,6 +772,235 @@ class Worker(QObject):
         if changed:
             self.sessions_changed.emit()
             self._emit()
+
+    def _mc5000_conn(self, dev):
+        conns = self.conns.get(dev, {})
+        return next((conns[v] for v in ('ble', 'net') if hasattr(conns.get(v), 'command')), None)
+
+    BT_ACTIONS = {'status': None, 'pause': 5, 'off': None, 'on': 0}      # action -> minutes for hold_charger
+
+    def _bt_off(self):
+        try:
+            return set(json.loads(self.db.setting('bt_off') or '[]'))
+        except ValueError:
+            return set()
+
+    def _bt_addr(self, d):
+        """Bluetooth address of a device (dict from db.devices), None for USB-only chargers."""
+        keys = [k for k in (d.get('key'), d.get('alt_key')) if k and '-ble-' in k]
+        return keys[0].split('-ble-', 1)[1].upper() if keys else None
+
+    def _bt_holds(self):
+        """dev -> time until which its Bluetooth is paused (inf = switched off), from BattBench's own Bluetooth and
+        the BattBench-ESPs; devices without a pause are left out."""
+        now = time.time()
+        if now - self.bt_addrs_t > 30:                      # device list: read again now and then
+            self.bt_addrs = {d['id']: a for d in self.db.devices() if (a := self._bt_addr(d))}
+            self.bt_addrs_t = now
+        out = {}
+        local = self._local_bt() is None
+        for dev, addr in self.bt_addrs.items():
+            if any(n.ble_connected(addr) for n in self.nets.values()):
+                self.bt_mirrored.pop(addr, None)            # switched on again on the ESP: no pause here either
+                if self.ble and self.ble.held(addr) is not None:
+                    self.ble.hold_charger(addr, 0)
+                    self._bt_forget_off(addr)
+                continue
+            esp = [h for h in (n.ble_until(addr) for n in self.nets.values()) if h is not None and h > now]
+            if local:
+                self._bt_mirror(addr, max(esp) if esp else None)
+            holds = esp + [h for h in [self.ble.held(addr) if local else None] if h is not None and h > now]
+            if holds:
+                out[dev] = max(holds)
+        return out
+
+    def _local_bt(self):
+        """Why this PC's Bluetooth plays no part for SkyRC chargers ('esp': setting, 'off': --no-bt or not running,
+        'not ready': its search fails), None when it does."""
+        if self.skyrc == 'esp':
+            return 'esp'
+        if not (self.ble and self.ble.is_alive()):
+            return 'off'
+        return None if self.ble.ok else 'not ready'
+
+    def _bt_forget_off(self, addr):
+        off = self._bt_off()
+        if addr in off:
+            self.db.set_setting('bt_off', json.dumps(sorted(off - {addr})))
+
+    def _bt_mirror(self, addr, until):
+        """Paused / switched off on a BattBench-ESP (e.g. on its web page): keep BattBench's own Bluetooth away from
+        the charger as long, else it would take the charger at once; let it go again when the ESP does."""
+        if not self.ble:
+            return
+        mine, held = self.bt_mirrored.get(addr), self.ble.held(addr)
+        if until is not None and held in (None, mine):
+            if mine is None or abs(until - mine) > 5:        # the ESP's countdown, asked every few seconds
+                self.ble.hold_until(addr, until)
+                self.bt_mirrored[addr] = until
+        elif until is None and mine is not None:
+            if held == mine:
+                self.ble.hold_charger(addr, 0)
+            del self.bt_mirrored[addr]
+
+    def _bt(self, dev, action):
+        """Bluetooth of a SkyRC charger (it takes only one connection): action 'pause' (5 min), 'off', 'on' or
+        'status'. Applies to BattBench's own Bluetooth and to every BattBench-ESP that knows the charger, otherwise
+        the other one would take it at once. The state comes as charger_info kind 'bt'."""
+        d = next((x for x in self.db.devices() if x['id'] == dev), None)
+        addr = self._bt_addr(d) if d else None
+        if addr is None:
+            self.charger_info.emit(dict(kind='bt', dev=dev, data=None, error=tr('No Bluetooth charger.')))
+            return
+        local = self._local_bt()
+        if action != 'status':
+            off = self._bt_off()
+            off = off | {addr} if action == 'off' and local is None else off - {addr}
+            self.db.set_setting('bt_off', json.dumps(sorted(off)))
+            if self.ble:
+                self.ble.hold_charger(addr, self.BT_ACTIONS[action] if local is None else 0)
+            log.info('Bluetooth of %s: %s', addr, action)
+        until = self.ble.held(addr) if self.ble and local is None else None
+        direct = dict(unused=local, until=until, connected='ble' in self.conns.get(dev, {}))
+        hosts = [h for h in self.nets.values()
+                 if any(c.get('addr', '').upper() == addr for c in (h.info or {}).get('chargers', []))]
+        if action != 'status':
+            self.bt_mirrored.pop(addr, None)
+            for h in hosts:
+                h.ble = None                        # old state until _bt_run asked again: not mirrored back
+        threading.Thread(target=self._bt_run, args=(dev, action, direct, hosts), daemon=True, name='bt').start()
+
+    def _bt_run(self, dev, action, direct, hosts):
+        esp, errors = [], []
+        # switching on ends a pause; a pause of a switched off ESP switches it on afterwards
+        bodies = {'pause': [{'on': True}, {'pause': 5}], 'off': [{'on': False}],
+                  'on': [{'pause': 0}, {'on': True}]}.get(action, [])
+        for h in hosts:
+            try:
+                for body in bodies:
+                    h._post('/api/ble', body)
+                ble = h.ask_ble()                       # also for the notice on the tiles
+                esp.append(dict(host=h.host, url=h.base, state=ble.get('state', ''), on=ble.get('on', True),
+                                paused_secs=ble.get('paused_secs', 0)))
+            except Exception as e:
+                log.warning('BattBench-ESP %s: Bluetooth %s failed: %s', h.host, action, e)
+                errors.append(f'BattBench-ESP {h.host}: {e}')
+                esp.append(dict(host=h.host, url=h.base, state='', on=None, paused_secs=0))
+        self.charger_info.emit(dict(kind='bt', dev=dev, data=dict(direct=direct, esp=esp),
+                                    error='; '.join(errors) or None))
+
+    def _mc5000_ask(self, dev, kind, arg=None):
+        """kind 'summary': slot summary of slot arg (read only); 'settings': read the system settings, or with arg
+        (mc5000.Settings as dict) set them first. The answer comes as charger_info."""
+        conn = self._mc5000_conn(dev)
+        if conn is None:
+            self.charger_info.emit(dict(kind=kind, dev=dev, slot=arg if kind == 'summary' else None, data=None,
+                                        error=tr('The charger is not connected over Bluetooth or a BattBench-ESP.')))
+            return
+        threading.Thread(target=self._mc5000_ask_run, args=(conn, dev, kind, arg), daemon=True,
+                         name='mc5000-ask').start()
+
+    def _mc5000_ask_run(self, conn, dev, kind, arg):
+        out = dict(kind=kind, dev=dev, slot=None, data=None, error=None, text=None)
+        try:
+            if kind == 'summary':
+                out['slot'] = arg
+                reply = conn.command(mc5000.summary_packet(mc5000.SLOT_MASK[arg]))
+                out['data'] = mc5000.parse_summary(reply)
+            else:
+                if arg is not None:
+                    pkt = mc5000.settings_packet(mc5000.Settings(**arg))
+                    reply = conn.command(pkt)
+                    log.info('MC5000 command %s -> %s', pkt.hex(' '), reply.hex(' ') or 'no answer')
+                    if not mc5000.acked(reply, 0x95):
+                        raise RuntimeError(tr('the charger did not take the settings ({})').format(
+                            reply.hex(' ') or tr('no answer')))
+                reply = conn.command(mc5000.settings_query())
+                got = mc5000.parse_settings(reply)
+                out['data'] = asdict(got) if got else None
+                if arg is not None:
+                    if got is None or asdict(got) != arg:
+                        raise RuntimeError(tr('the charger reports other settings than were sent'))
+                    out['text'] = tr('Charger settings saved.')
+            if out['data'] is None:
+                out['error'] = tr('no valid answer ({})').format(reply.hex(' ') or tr('no answer'))
+        except Exception as e:
+            log.warning('MC5000 %s failed: %s', kind, e)
+            out['error'] = str(e)
+        self.charger_info.emit(out)
+
+    def _mc5000(self, dev, slots, prog, pid=None):
+        """Program and start (prog = mc5000.Program as dict) or stop (prog None) slots of an MC5000, over its
+        Bluetooth connection or the BattBench-ESP. Runs in its own thread: the charger answers between its status
+        queries, which takes a few seconds."""
+        conn = self._mc5000_conn(dev)
+        if conn is None:
+            self.command_result.emit(False, tr('The charger is not connected over Bluetooth or a BattBench-ESP.'),
+                                     None)
+            return
+        threading.Thread(target=self._mc5000_run, args=(conn, dev, slots, prog, pid), daemon=True,
+                         name='mc5000-command').start()
+
+    START_WAIT = 30                       # s: until the charger shows a new program and has started it
+    CLOCK_SLACK = 3                       # s: readings over a BattBench-ESP carry the ESP's time
+
+    def _raw(self, dev, slot):
+        """(raw status answer, time) of the newest reading of a slot."""
+        smp = self.latest.get((dev, slot))
+        try:
+            return bytes.fromhex(smp.raw), smp.t
+        except (AttributeError, TypeError, ValueError):
+            return b'', 0
+
+    def _mc5000_run(self, conn, dev, slots, prog, pid):
+        names = ', '.join(str(s + 1) for s in slots)
+
+        def send(pkt):
+            reply = conn.command(pkt)
+            log.info('MC5000 command %s -> %s', pkt.hex(' '), reply.hex(' ') or 'no answer')
+            return reply
+        try:
+            if prog is None:
+                for s in slots:
+                    send(mc5000.stop_packet(mc5000.SLOT_MASK[s]))
+                self.command_result.emit(True, tr('Slot {} stopped.').format(names), None)
+                return
+            p = mc5000.Program.from_dict(prog)
+            sent = {}
+            for s in slots:
+                if mc5000.working(self._raw(dev, s)[0]):     # a working slot would skip the program
+                    send(mc5000.stop_packet(mc5000.SLOT_MASK[s]))
+                reply = send(mc5000.program_packet(mc5000.SLOT_MASK[s], p))
+                if not mc5000.acked(reply, 0x94):
+                    raise RuntimeError(tr('slot {}: the charger did not take the program ({})').format(
+                        s + 1, reply.hex(' ') or tr('no answer')))
+                sent[s] = time.time()
+            # the answer is 01 even for a skipped slot: wait for the status to show the program's battery type and
+            # task; with a battery in, the charger starts by itself after a check and a resistance measurement
+            want, taken, running = (p.chem, p.mode), set(), set()
+            end = time.time() + self.START_WAIT
+            while time.time() < end and len(running) < len(slots):
+                time.sleep(1)
+                for s in slots:
+                    raw, t = self._raw(dev, s)
+                    if t > sent[s] - self.CLOCK_SLACK and mc5000.from_status(raw) == want:
+                        taken.add(s)
+                        if mc5000.started(raw):
+                            running.add(s)
+            lost = [s for s in slots if s not in taken]
+            if lost:
+                raise RuntimeError(tr('slot {}: the charger does not show the program').format(
+                    ', '.join(str(s + 1) for s in lost)))
+            text = tr('Profile "{}" started on slot {}.').format(p.name, ', '.join(str(s + 1) for s in sorted(running)))
+            waiting = sorted(set(slots) - running)
+            if waiting:
+                text = (text + ' ' if running else '') + tr(
+                    'Slot {}: programmed, starts when a battery is inserted.').format(
+                    ', '.join(str(s + 1) for s in waiting))
+            self.command_result.emit(True, text, dict(dev=dev, slots=slots, prog=prog, pid=pid))
+        except Exception as e:
+            log.warning('MC5000 command failed: %s', e)
+            self.command_result.emit(False, tr('The charger command failed: {}').format(e), None)
 
     def _set_nominal(self, sid, nominal):
         live = next((s for s in self.tracker.sessions() if s.db_id == sid), None)
@@ -583,15 +1022,22 @@ class ProgressBar(QWidget):
     def __init__(self):
         super().__init__()
         self.value, self.color, self.direction, self.phase = 0, QColor(COLORS['empty']), 0, 0.0
+        self.text = None
         self.setFixedHeight(16)
         self.timer = QTimer(self)
         self.timer.setInterval(1000 // self.FPS)
         self.timer.timeout.connect(self._tick)
 
-    def set_state(self, value, color, direction):
-        """direction: +1 charging, -1 discharging, 0 no animation."""
+    def set_state(self, value, color, direction, text=None):
+        """direction: +1 charging, -1 discharging, 0 no animation. text instead of "n %" (status bar of chargers
+        without a progress value)."""
         self.value, self.color, self.direction = max(0, min(100, value)), QColor(color), direction
+        self.text = text
         self._run()
+        self.update()
+
+    def set_color(self, color):
+        self.color = QColor(color)
         self.update()
 
     def _run(self):
@@ -634,7 +1080,7 @@ class ProgressBar(QWidget):
                                 QPointF(x - d, r.bottom() - 4)])
                 x += self.STEP
         p.restore()
-        text = f'{self.value} %'
+        text = self.text if self.text is not None else f'{self.value} %'
         f = p.font()
         f.setPointSizeF(f.pointSizeF() * 0.9)
         p.setFont(f)
@@ -655,14 +1101,31 @@ def bar_direction(s):
     return 1 if s['ma'] >= PHASE_MIN_MA else -1 if s['ma'] <= -PHASE_MIN_MA else 0
 
 
+def status_word(s):
+    """Short state of a running slot for the status bar: charging, discharging, rest, done or the error."""
+    if s['mode'] in DONE_MODES:
+        return tr_data(FINISHED)
+    if s['mode'] in (2, 20):
+        return mode_name(s)
+    if s['mode_str'] == PAUSE:
+        return tr_data(PAUSE)
+    d = 1 if s['ma'] >= PHASE_MIN_MA else -1 if s['ma'] <= -PHASE_MIN_MA else 0
+    return tr_data(MODE_NAMES[3] if d > 0 else MODE_NAMES[5]) if d else mode_name(s)
+
+
 class SlotTile(QFrame):
     clicked = Signal(object)              # (device id, slot)
+    menu = Signal(object, object)         # (device id, slot), global position: right click
 
     def __init__(self, key, compact=False):
         super().__init__()
         self.key = key
         self.compact = compact            # narrow tile (N16 / N24): values one per line
         self.approx_res = False           # resistance is only an estimate (A4Air)
+        self.status_bar = False           # charger without progress %: the bar shows state and voltage instead
+        self.color = COLORS['empty']
+        self.blinking = False             # error: blinks (MainWindow's blink timer)
+        self.chosen = False               # chosen in the charger control panel
         self.setFrameShape(QFrame.StyledPanel)
         self.setCursor(Qt.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)     # all columns equally wide
@@ -670,6 +1133,7 @@ class SlotTile(QFrame):
         lay.setContentsMargins(0, 0, 0, 6)
         lay.setSpacing(2)
         self.head = QLabel()
+        self.head.setFixedHeight(HEAD_HEIGHT)
         self.set_battery(None)
         self.head.setAlignment(Qt.AlignCenter)
         f = QFont()
@@ -705,9 +1169,25 @@ class SlotTile(QFrame):
         text = f'{slot}' if self.compact else tr('Slot {}').format(slot)
         self.head.setText(text + (f' – #{bid}' if bid is not None else '') + (f' · {rating}' if rating else ''))
 
-    def set_color(self, color):
+    def set_color(self, color, blink=False):
         self.color = color
-        self.head.setStyleSheet(f'background:{color}; color:white; padding:3px;')
+        self.blinking = blink
+        self._head_style()
+
+    def blink(self, dark):
+        """Error slots: title bar and status bar switch between the colour and a darker shade."""
+        if self.blinking:
+            self._head_style(dark)
+            self.bar.set_color(QColor(self.color).darker(220) if dark else QColor(self.color))
+
+    def set_chosen(self, chosen):
+        """Chosen in the charger control panel: title bar in the control colour instead of the slot colour."""
+        self.chosen = chosen
+        self._head_style()
+
+    def _head_style(self, dark=False):
+        color = CONTROL_COLOR if self.chosen else QColor(self.color).darker(220).name() if dark else self.color
+        self.head.setStyleSheet(f'background:{color}; color:white; padding:0 3px;')
 
     def set_selected(self, sel):
         self.setStyleSheet('SlotTile { border: 3px solid #3a7bd5; }' if sel else
@@ -721,17 +1201,26 @@ class SlotTile(QFrame):
             self.bar.hide()
             self.set_color(COLORS['empty'])
             return
-        self.set_color(mode_color(s['mode'], s['ma']))
+        self.set_color(sample_color(s), s['mode'] in (2, 20))
         if s['mode'] == 0:
-            self.mode.setText(tr_data(MODE_NAMES[0]))
-            self.big.setText('')
+            idle = is_idle(s)                               # cell in, no task: state, type and voltage
+            typ = ' '.join(x for x in (s['chem'], s['size']) if x and x not in ('auto', 'unknown', 'empty'))
+            self.mode.setText(f"{mode_name(s)}\n{typ}" if idle else mode_name(s))
+            self.big.setText(f"{s['mv'] / 1000:.3f} V" if idle else '')
             self.lines.setText(f"{s['temp']} °C" if s['temp'] else '')
-            self.bar.hide()
+            if self.status_bar:
+                self.bar.show()
+                self.bar.set_state(100 if idle else 0, self.color, 0,
+                                   f"{mode_name(s)} · {s['mv'] / 1000:.3f} V" if idle else mode_name(s))
+            else:
+                self.bar.hide()
             return
         phase = ''
-        if s['mode'] in (9, 11, 13) and s['ma']:
+        if s['mode_str'] == PAUSE and s['mode'] in TASKS:       # SkyRC: rest between the phases of a task
+            phase = ' · ' + tr_data(PAUSE)
+        elif s['mode'] in (9, 11, 13) and s['ma']:
             phase = ' · ' + tr_data(MODE_NAMES[3] if s['ma'] > 0 else MODE_NAMES[5])
-        typ = ' '.join(x for x in (s['chem'], s['size']) if x not in ('auto', 'unknown', 'empty'))
+        typ = ' '.join(x for x in (s['chem'], s['size']) if x and x not in ('auto', 'unknown', 'empty'))
         self.mode.setText(f"{mode_name(s)}{phase}\n{typ}")
         self.big.setText(f"{s['mv'] / 1000:.3f} V")
         extra = [f"{'≈' if self.approx_res else ''}{s['res']} mΩ" if s['res'] else '– mΩ']
@@ -742,12 +1231,23 @@ class SlotTile(QFrame):
                                           fmt_dur(s['secs'])]))
         else:
             self.lines.setText(f"{s['ma']} mA · {s['mah']} mAh\n{' · '.join(extra + [fmt_dur(s['secs'])])}")
-        if s['progress'] or not self.bar.isHidden():        # chargers without % never show the bar
+        if self.status_bar and not s['progress']:           # no %: full bar with state and voltage
+            self.bar.show()
+            self.bar.set_state(100, self.color, bar_direction(s) if s['mode_str'] != PAUSE else 0,
+                               f"{status_word(s)} · {s['mv'] / 1000:.3f} V")
+        elif s['progress'] or not self.bar.isHidden():      # chargers without % never show the bar
             self.bar.show()
             self.bar.set_state(s['progress'] or 0, self.color, bar_direction(s))
 
     def mousePressEvent(self, e):
-        self.clicked.emit(self.key)
+        if e.button() == Qt.RightButton:
+            self.menu.emit(self.key, e.globalPosition().toPoint())
+        else:
+            self.clicked.emit(self.key)
+
+
+CONTROL_COLOR = '#3949ab'         # charger control panel and the slots chosen there (indigo)
+HEAD_HEIGHT = 24                  # title bars of the tiles and of the control panel
 
 
 # home symbol of the chart's reset button
@@ -759,6 +1259,21 @@ HOME_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="
 def fmt_hms(secs):
     secs = int(round(secs))
     return f'{secs // 3600}:{secs % 3600 // 60:02d}:{secs % 60:02d}' if secs >= 0 else ''
+
+
+class RightAxis(pg.AxisItem):
+    """Right-hand value axis with its title left of the axis line (numbers right of it): next to its own line instead
+    of next to the line of the following axis."""
+    GAP = 3
+
+    def __init__(self):
+        super().__init__('right')
+
+    def resizeEvent(self, ev=None):
+        super().resizeEvent(ev)
+        if self.label is not None:
+            br = self.label.boundingRect()
+            self.label.setPos(QPointF(-br.height() - self.GAP, int(self.size().height() / 2 + br.width() / 2)))
 
 
 class AxisViewBox(pg.ViewBox):
@@ -896,7 +1411,7 @@ class CurvePlot(pg.GraphicsLayoutWidget):
                 vb.setZValue(-1)
                 vb.setXLink(self.vb)
                 self.scene().addItem(vb)
-                axis = pg.AxisItem('right')
+                axis = RightAxis()
                 axis.setTickPen(pg.mkPen(color))
                 axis.linkToView(vb)
                 self.ci.addItem(axis, row=2, col=i)
@@ -918,6 +1433,7 @@ class CurvePlot(pg.GraphicsLayoutWidget):
             line = pg.InfiniteLine(pos=0, angle=0, movable=False, pen=pg.mkPen('#666666', width=1))
             self.vbs[k].addItem(line, ignoreBounds=True)
             self.zero_lines[k] = line
+        p.layout.setContentsMargins(1, 1, 22, 1)       # room for the title of the first right-hand axis
         self.vb.sigResized.connect(self._sync)
         self.vb.sigXRangeChanged.connect(lambda *_: self._align_zero())
         self.legend = pg.LegendItem(colCount=len(self.SERIES), brush=pg.mkBrush(255, 255, 255, 210),
@@ -926,20 +1442,15 @@ class CurvePlot(pg.GraphicsLayoutWidget):
         self.ci.addItem(self.legend, row=1, col=0, colspan=len(self.SERIES))
         self.ci.layout.setAlignment(self.legend, Qt.AlignHCenter)
         self.axes = [p.getAxis('left')] + [self.ci.getItem(2, i) for i in range(1, len(self.SERIES))]
-        for i, (curve, name) in enumerate(zip(self.curves, names)):
-            self.legend.addItem(curve, name)
-            sample, label = self.legend.items[i]
+        for i in range(len(self.SERIES)):
             # like Grafana: hovering a legend entry highlights the value, a click shows / hides it; its axis does the same
-            for item in (sample, label, self.axes[i]):
-                item.mouseClickEvent = lambda ev, i=i: (ev.accept(), self.toggle(i))
-                item.setCursor(Qt.PointingHandCursor)
-                item.setAcceptHoverEvents(True)
-                item.hoverEvent = lambda ev, i=i: self.highlight(None if ev.isExit() else i)
+            self._hook(self.axes[i], i)
         self.focus = None                     # series under the mouse (curve or legend entry): the others are dimmed
         hidden = QSettings('battbench', 'battbench').value('hidden_series', '')
         self.shown = [unit not in str(hidden).split(',') for unit, _c in self.SERIES]
-        for i in range(len(self.SERIES)):
-            self._show_series(i)
+        self.avail = [True] * len(self.SERIES)   # the charger reports the value (e.g. no temperature from an MC5000)
+        self.entries = {}                     # series -> (sample, label) of its legend entry
+        self._build_legend()
         self.vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('#555', style=Qt.DashLine))
         self.vb.addItem(self.vline, ignoreBounds=True)
         self.vline.hide()
@@ -963,6 +1474,26 @@ class CurvePlot(pg.GraphicsLayoutWidget):
         self.reset_btn.hide()
         self.vb.sigXRangeChanged.connect(lambda *_: self._update_reset())
 
+    def _hook(self, item, i):
+        item.mouseClickEvent = lambda ev, i=i: (ev.accept(), self.toggle(i))
+        item.setCursor(Qt.PointingHandCursor)
+        item.setAcceptHoverEvents(True)
+        item.hoverEvent = lambda ev, i=i: self.highlight(None if ev.isExit() else i)
+
+    def _build_legend(self):
+        """Legend entries of the values the charger reports, in the order of SERIES."""
+        self.legend.clear()
+        self.entries = {}
+        for i, (curve, name) in enumerate(zip(self.curves, self.names)):
+            if self.avail[i]:
+                self.legend.addItem(curve, name)
+                self.entries[i] = self.legend.items[-1]
+                for item in self.entries[i]:
+                    self._hook(item, i)
+        self.legend.setColumnCount(max(len(self.entries), 1))
+        for i in range(len(self.SERIES)):
+            self._show_series(i)
+
     def toggle(self, i):
         self.shown[i] = not self.shown[i]
         self._show_series(i)
@@ -982,8 +1513,8 @@ class CurvePlot(pg.GraphicsLayoutWidget):
 
     def _show_series(self, i):
         """Curve and (right-hand) axis visible or hidden; the legend entry stays, greyed out when hidden.
-        Dimmed while another series is highlighted."""
-        on = self.shown[i]
+        Dimmed while another series is highlighted. A value the charger does not report: no curve, axis or entry."""
+        on = self.shown[i] and self.avail[i]
         dim = self.DIM if self.focus not in (None, i) else 1
         for item in (self.curves[i], self.axes[i]):
             item.setOpacity(dim)
@@ -1001,7 +1532,9 @@ class CurvePlot(pg.GraphicsLayoutWidget):
         unit, color = self.SERIES[i]
         bold = {'font-weight': 'bold'} if self.focus == i else {}
         self.axes[i].setLabel(f'{self.names[i]} ({unit})', color=color if on else '#bbbbbb', **bold)
-        sample, label = self.legend.items[i]
+        if i not in self.entries:
+            return
+        sample, label = self.entries[i]
         label.setText(self.names[i], color='#222' if on else '#aaaaaa', bold=self.focus == i)
         label.setOpacity(dim)
         sample.setOpacity((1 if on else 0.3) * dim)
@@ -1090,8 +1623,13 @@ class CurvePlot(pg.GraphicsLayoutWidget):
             temp = a[:, 5].copy()
             temp[temp <= 0] = np.nan                  # 0 = not reported (e.g. A4 Air over Bluetooth)
             self.data = (x, a[:, 1] / 1000, a[:, 2], a[:, 4], res, temp)
+            avail = [True, True, True, bool(np.isfinite(res).any()), bool(np.isfinite(temp).any())]
         else:
             self.data = None
+            avail = [True] * len(self.SERIES)
+        if avail != self.avail:
+            self.avail = avail
+            self._build_legend()
         follow = vr is not None and self.data is not None and vr[1] >= self._last_x - 5
         for i, curve in enumerate(self.curves):
             if self.data is None:
@@ -1197,7 +1735,7 @@ class CurvePlot(pg.GraphicsLayoutWidget):
         for k in range(len(self.SERIES)):
             ys = self.data[k + 1][max(a - 1, 0):b + 1]           # the segments around the mouse
             ys = ys[~np.isnan(ys)]
-            if not self.shown[k] or not len(ys):
+            if not self.shown[k] or not self.avail[k] or not len(ys):
                 continue
             top = self.vbs[k].mapViewToScene(QPointF(x, ys.max())).y()
             bottom = self.vbs[k].mapViewToScene(QPointF(x, ys.min())).y()
@@ -1224,7 +1762,8 @@ class CurvePlot(pg.GraphicsLayoutWidget):
                   '– mΩ' if np.isnan(self.data[4][i]) else f'{self.data[4][i]:.0f} mΩ',
                   '– °C' if np.isnan(self.data[5][i]) else f'{self.data[5][i]:.0f} °C']
         lines = ''.join(f"<br><span style='color:{color}'>{f'<b>{v}</b>' if k == self.focus else v}</span>"
-                        for k, (v, (_u, color), on) in enumerate(zip(values, self.SERIES, self.shown)) if on)
+                        for k, (v, (_u, color), on) in enumerate(zip(values, self.SERIES, self.shown))
+                        if on and self.avail[k])
         self.info.setHtml(f"<span style='color:#222'><b>{fmt_hms(xs[i])}</b> &nbsp; {stamp}</span>{lines}")
         self.info.show()
         # next to the mouse: right below it, or left / above it where the chart ends
@@ -1242,6 +1781,8 @@ BATTERY_TYPES = ['NiMH AA', 'NiMH AAA', 'NiMH LSD AA (eneloop type)', 'NiMH LSD 
 
 def mode_name(sample):
     """Mode of a live sample in the UI language (charger's own text for unknown modes / errors)."""
+    if is_idle(sample):
+        return tr_data(IDLE)
     return tr_data(MODE_NAMES.get(sample['mode']) if sample['mode'] != 20 or not sample['mode_str'] or
                    sample['mode_str'] == 'error' else sample['mode_str'])
 
@@ -1667,6 +2208,7 @@ class ResultPanel(QWidget):
     save_label = Signal(int, str)         # session id, note
     phase_clicked = Signal(object)        # start time of the phase to show alone, None = whole run
     new_battery = Signal()
+    export_report = Signal()              # "Export report …" of the session shown
 
     def __init__(self, db: DB):
         super().__init__()
@@ -1684,7 +2226,14 @@ class ResultPanel(QWidget):
         f.setBold(True)
         self.title.setFont(f)
         self.title.setWordWrap(True)
-        lay.addWidget(self.title)
+        row = QHBoxLayout()
+        row.addWidget(self.title, 1)
+        self.export = QPushButton(tr('Export report …'))
+        self.export.setToolTip(tr('Report of this session as HTML (optionally PDF): rating, battery, charger, '
+                                  'chart, details and the charge / discharge phases'))
+        self.export.clicked.connect(self.export_report)
+        row.addWidget(self.export, 0, Qt.AlignBottom)
+        lay.addLayout(row)
         self.grade = QLabel('')
         self.grade.setAlignment(Qt.AlignCenter)
         self.grade.setWordWrap(True)          # long rating line: two lines rather than cut off
@@ -1864,7 +2413,8 @@ class ResultPanel(QWidget):
                              'discharging right now)')),
                 (FINISHED, tr('the charger has finished the task')),
                 (REMOVED, tr('the battery was taken out before the task was finished')),
-                (ABORTED, tr('the task was stopped or replaced by another one, or the data broke off'))]),
+                (ABORTED, tr('the task was stopped or replaced by another one, the charger stopped it with an '
+                             'error (see the rating note), or the data broke off'))]),
             'dis': tr('<p>The capacity the battery delivered during the (last) discharge, measured by the charger; '
                       'in brackets in % of the nominal capacity. It is the largest part of the health index: from '
                       '90 % the capacity score is full, below 70 % the cell is rated D.</p>'),
@@ -1931,6 +2481,7 @@ class ResultPanel(QWidget):
         if (d.get('id') if d else None) != self.sid:
             self._save_label()
         self.cur = d
+        self.export.setEnabled(d is not None)
         enabled = d is not None and d.get('id') is not None
         for w in (self.battery, self.nominal, self.nb, self.label):
             w.setEnabled(enabled)
@@ -1971,7 +2522,8 @@ class ResultPanel(QWidget):
             self.grade.setText(tr('Charging only, no analysis'))
         elif is_measuring(d) or d['status'] == RUNNING and g == NO_GRADE:
             g, unrated = NO_GRADE, False      # capacity not final yet: e.g. "Analyse läuft" in grey
-            self.grade.setText(tr_data(d['task']) + ' ' + tr_data(RUNNING))
+            self.grade.setText(tr_data(d['task']) + ' ' + tr_data(RUNNING) +
+                               (' · ' + tr_data(PAUSE) if d.get('paused') else ''))
         else:
             self.grade.setText(tr('Set the nominal capacity for a rating') if unrated else tr_data(g) + pct)
         self.grade.setStyleSheet(f"background:{GRADE_COLORS.get(g, '#888')}; color:white; padding:6px;"
@@ -1980,7 +2532,9 @@ class ResultPanel(QWidget):
         self.note.setVisible(bool(self.note.text()))     # empty: no gap between the rating and the fields
         self.f['task'].setText(tr_data(d['task']))
         status = tr_data(d['status'])
-        if d['status'] == RUNNING and d.get('phases'):          # running: what it is doing right now
+        if d['status'] == RUNNING and d.get('paused'):          # running: what it is doing right now
+            status += ' · ' + tr_data(PAUSE)
+        elif d['status'] == RUNNING and d.get('phases'):
             status += ' · ' + tr_data(MODE_NAMES[3] if d['phases'][-1][0] == CHARGE else MODE_NAMES[5])
         self.f['status'].setText(status)
         self.f['type'].setText(' '.join(x for x in (d['chem'], d['size']) if x) +
@@ -2176,10 +2730,11 @@ def selected_ids(table):
     return [table.item(r, 0).data(Qt.UserRole) for r in rows if not table.isRowHidden(r)]
 
 
-def row_menu(table, edit, delete, enter=None, keys=True):
-    """Right click on a row: Edit … (if edit is given) / Delete; with several rows selected (Ctrl / Shift) only
-    Delete. Keys: Enter = enter (default: edit, one row selected), Del = delete. keys=False: the caller handles the
-    keys - two visible tables with the same shortcuts make them ambiguous for Qt, then none of them fires."""
+def row_menu(table, edit, delete, enter=None, keys=True, extra=()):
+    """Right click on a row: Edit … (if edit is given), the extra (text, callable) / Delete; with several rows
+    selected (Ctrl / Shift) only Delete. Keys: Enter = enter (default: edit, one row selected), Del = delete.
+    keys=False: the caller handles the keys - two visible tables with the same shortcuts make them ambiguous for Qt,
+    then none of them fires."""
     table.setContextMenuPolicy(Qt.CustomContextMenu)
     enter = enter or (lambda: edit() if len(selected_ids(table)) == 1 else None)
     for key, fn in ((Qt.Key_Return, enter), (Qt.Key_Enter, enter), (Qt.Key_Delete, delete)) if keys else ():
@@ -2195,6 +2750,8 @@ def row_menu(table, edit, delete, enter=None, keys=True):
         menu = QMenu(table)
         if n == 1 and edit:
             menu.addAction(tr('Edit …'), edit)
+        for text, fn in extra if n == 1 else ():
+            menu.addAction(text, fn)
         menu.addAction(tr('Delete') if n == 1 else tr('Delete ({})').format(n), delete)
         menu.exec(table.viewport().mapToGlobal(pos))
 
@@ -2278,6 +2835,7 @@ class BatteryTab(QWidget):
     changed = Signal(int)                 # battery id added/edited, -1 = deleted
     models_changed = Signal(list)         # a model was added/edited: ids of its batteries
     sessions_deleted = Signal()           # sessions deleted from the history
+    export_session = Signal(int)          # "Export report …" on a session of the history
     HIST_COLS = ['start', 'dev', 'slot', 'task', 'status', 'dis', 'pct', 'chg', 'rmin', 'tmax', 'grade', 'dur', 'label']
 
     def __init__(self, db: DB):
@@ -2329,7 +2887,8 @@ class BatteryTab(QWidget):
         # a click (or arrow key) on a session shows it at once; a click on the same row again too
         self.hist.currentCellChanged.connect(lambda r, _c, pr, _pc: self._open_hist_row(r) if r != pr else None)
         self.hist.cellClicked.connect(lambda r, _c: self._open_hist_row(r))
-        row_menu(self.hist, None, self.delete_sessions, keys=False)
+        row_menu(self.hist, None, self.delete_sessions, keys=False, extra=[
+            (tr('Export report …'), lambda: self.export_session.emit(selected_ids(self.hist)[0]))])
         # Enter / Del: for the battery list or the history, whichever has the focus
         for key, fn in ((Qt.Key_Return, self._enter_key), (Qt.Key_Enter, self._enter_key),
                         (Qt.Key_Delete, self._delete_key)):
@@ -2606,6 +3165,104 @@ class ModelTab(QWidget):
 
 
 # ======================================================================= main window
+class OfflineOverlay(QWidget):
+    """Big notice over the tiles of a charger that is gone or no longer answers. Clicks go through to the tiles."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        lay = QVBoxLayout(self)
+        self.box = box = QFrame()
+        box.setObjectName('offline')
+        box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        blay = QHBoxLayout(box)                             # wide and low: the tiles are only one row high
+        blay.setContentsMargins(24, 10, 24, 10)
+        blay.setSpacing(24)
+        self.title = QLabel(tr('Charger offline'))
+        f = QFont()
+        f.setPointSize(22)
+        f.setBold(True)
+        self.title.setFont(f)
+        blay.addWidget(self.title)
+        self.text = QLabel()
+        self.text.setWordWrap(True)
+        f = QFont()
+        f.setPointSize(11)
+        self.text.setFont(f)
+        blay.addWidget(self.text, 1)
+        self.room = QWidget()                               # keeps the place of TilePage.action free
+        self.room.hide()
+        blay.addWidget(self.room)
+        lay.setContentsMargins(40, 8, 40, 8)
+        lay.addWidget(box, 0, Qt.AlignVCenter)
+        self.style_now = None
+        self.set_style(tr('Charger offline'), COLORS['error'])
+        self.hide()
+
+    def set_style(self, title, color):
+        if self.style_now == (title, color):
+            return
+        self.style_now = (title, color)
+        self.title.setText(title)
+        self.title.setStyleSheet(f'color: {color};')
+        self.box.setStyleSheet(f'#offline {{ background: palette(base); border: 3px solid {color};'
+                               ' border-radius: 10px; }')
+
+    def paintEvent(self, e):
+        c = self.palette().window().color()
+        c.setAlpha(150)                                     # tiles stay readable underneath
+        QPainter(self).fillRect(self.rect(), c)
+
+
+class TilePage(QWidget):
+    """Tiles of one charger with the offline notice on top."""
+
+    def __init__(self):
+        super().__init__()
+        self.offline = OfflineOverlay(self)
+        self.action = QPushButton(self)                    # on the notice, e.g. "Resume now" for a Bluetooth pause
+        self.action.hide()
+        self.on_action = None
+        self.action.clicked.connect(lambda: self.on_action and self.on_action())
+
+    def resizeEvent(self, e):
+        self.offline.setGeometry(self.rect())
+        super().resizeEvent(e)
+        self._place_action()
+
+    def _place_action(self):
+        if self.action.isHidden():
+            return
+        self.offline.layout().activate()
+        box = self.offline.box.geometry()
+        self.action.move(box.right() - 24 - self.action.width(), box.center().y() - self.action.height() // 2)
+        self.action.raise_()
+
+    def set_offline(self, text, title=None, color=None, action=None):
+        """text = what happened (None: hide the notice); title / color instead of "Charger offline" in red;
+        action = (button text, callable) for a button on the notice."""
+        if action:
+            if self.action.text() != action[0]:
+                self.action.setText(action[0])
+                self.action.adjustSize()
+                self.offline.room.setFixedWidth(self.action.width())
+            self.on_action = action[1]
+        else:
+            self.on_action = None
+        self.offline.room.setVisible(bool(action) and text is not None)
+        if text is None:
+            self.offline.hide()
+            self.action.hide()
+            return
+        self.offline.set_style(title or tr('Charger offline'), color or COLORS['error'])
+        self.offline.text.setText(text)
+        self.offline.setGeometry(self.rect())
+        self.offline.show()
+        self.offline.raise_()
+        self.action.setVisible(bool(action))
+        self._place_action()
+
+
 class ChargerTab(QFrame):
     """Browser-like tab for one charger: name, short status and one lamp per slot in the slot colour."""
     clicked = Signal(int)
@@ -2637,6 +3294,7 @@ class ChargerTab(QFrame):
         lamps.setSpacing(3 if slots <= 8 else 2)
         self.lamp_size = self.LAMP if slots <= 8 else 9
         self.lamps = []
+        self.lamp_state = {}                  # slot -> (colour, blinking)
         for _ in range(slots):
             lamp = QLabel()
             lamp.setFixedSize(self.lamp_size, self.lamp_size)
@@ -2654,15 +3312,25 @@ class ChargerTab(QFrame):
             'ChargerTab { background: palette(button); border: 1px solid palette(mid); border-bottom: none;'
             ' border-top-left-radius: 6px; border-top-right-radius: 6px; margin-top: 2px; }')   # light + dark theme
 
-    def set_lamp(self, slot, color, tip):
-        """Round LED: bright spot top left, darker rim."""
-        c = QColor(color)
+    def set_lamp(self, slot, color, tip, blink=False):
+        """Round LED: bright spot top left, darker rim. blink: error, switched by blink()."""
         lamp = self.lamps[slot]
+        if self.lamp_state.get(slot) != (color, blink):
+            self.lamp_state[slot] = (color, blink)
+            self._paint_lamp(lamp, color)
+        lamp.setToolTip(tip)
+
+    def blink(self, dark):
+        for slot, (color, blink) in self.lamp_state.items():
+            if blink:
+                self._paint_lamp(self.lamps[slot], QColor(color).darker(220).name() if dark else color)
+
+    def _paint_lamp(self, lamp, color):
+        c = QColor(color)
         lamp.setStyleSheet(
             f'border-radius:{self.lamp_size // 2}px; border:1px solid {c.darker(160).name()};'
             f'background: qradialgradient(cx:0.5, cy:0.5, radius:0.6, fx:0.32, fy:0.3, stop:0 {c.lighter(170).name()},'
             f' stop:0.45 {c.name()}, stop:1 {c.darker(130).name()});')
-        lamp.setToolTip(tip)
 
     def mousePressEvent(self, e):
         self.clicked.emit(self.dev)
@@ -2710,7 +3378,11 @@ class InfoDialog(QDialog):
             ('ISDT A8 Air / C4 Air', 'Bluetooth', tr('Like the A4 Air over Bluetooth.')),
             ('SkyRC MC3000 / MC5000', 'Bluetooth',
              tr('Status (charging / discharging / pause / done / error), operation, battery type, voltage, current, '
-                'mAh, time, temperature, internal resistance. Read only (no start / stop).')),
+                'mAh, time, temperature, internal resistance. MC5000: start / stop with profiles, charger settings, '
+                'Bluetooth pause (over Bluetooth or a BattBench-ESP). MC3000: read only.')),
+            ('', 'BattBench-ESP',
+             tr('The same values, through an ESP32 that keeps the Bluetooth connection and records while BattBench '
+                'is not running; BattBench fetches the missed readings when it starts.')),
             ('ISDT A4 Air', tr('Bluetooth (recommended)'),
              tr('State (charging / full / error), charge level %, mAh and mWh from the charger, measured internal '
                 'resistance, voltage, current, input voltage. No temperature.')),
@@ -2769,6 +3441,42 @@ class InfoDialog(QDialog):
         hint.setWordWrap(True)
         hint.setStyleSheet('background: palette(alternate-base); border: 1px solid #e69138; border-radius: 6px; padding: 8px;')
         lay.addWidget(hint)
+        lay.addWidget(QLabel('<b>BattBench-ESP</b>'))
+        row = QHBoxLayout()
+        row.addWidget(QLabel(tr('Host names or IP addresses:')))
+        self.esp = QLineEdit(' '.join(parent.esp))
+        self.esp.setPlaceholderText('battbench-esp.local')
+        self.esp.setToolTip(tr('An ESP32 with the BattBench-ESP firmware keeps the Bluetooth connection to a SkyRC '
+                               'charger and records while BattBench is not running. Several separated by spaces.'))
+        self.esp.setEnabled(parent.source != 'offline')
+        self.esp.returnPressed.connect(self._set_esp)
+        row.addWidget(self.esp, 1)
+        apply = QPushButton(tr('Apply'))
+        apply.setEnabled(parent.source != 'offline')
+        apply.clicked.connect(self._set_esp)
+        row.addWidget(apply)
+        lay.addLayout(row)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(tr('Connect SkyRC chargers:')))
+        self.skyrc = QComboBox()
+        for k, text in skyrc_mode_names().items():
+            self.skyrc.addItem(text, k)
+        self.skyrc.setCurrentIndex(max(0, self.skyrc.findData(parent.skyrc)))
+        self.skyrc.setEnabled(parent.source != 'offline')
+        self.skyrc.setToolTip(tr('An MC5000 takes only one Bluetooth connection. Automatic switches to '
+                                 '"BattBench-ESP" once a BattBench-ESP was connected.'))
+        self.skyrc.currentIndexChanged.connect(self._set_skyrc)
+        row.addWidget(self.skyrc)
+        row.addStretch(1)
+        lay.addLayout(row)
+        self.esp_auto = QCheckBox(tr('Find BattBench-ESP in the network automatically (mDNS)'))
+        self.esp_auto.setChecked(parent.esp_auto)
+        self.esp_auto.setEnabled(parent.source != 'offline')
+        self.esp_auto.toggled.connect(self._set_esp)
+        lay.addWidget(self.esp_auto)
+        self.esp_state = QLabel()
+        self.esp_state.setWordWrap(True)
+        lay.addWidget(self.esp_state)
         lay.addStretch(1)
         bb = QDialogButtonBox(QDialogButtonBox.Close)
         bb.rejected.connect(self.reject)
@@ -2785,6 +3493,17 @@ class InfoDialog(QDialog):
         QSettings('battbench', 'battbench').setValue('a4', mode)
         self.main.worker.cmds.put(('a4', mode))
 
+    def _set_skyrc(self):
+        self.main.set_skyrc(self.skyrc.currentData())
+
+    def _set_esp(self):
+        hosts = self.esp.text().replace(',', ' ').split()
+        self.main.esp, self.main.esp_auto = hosts, self.esp_auto.isChecked()
+        settings = QSettings('battbench', 'battbench')
+        settings.setValue('esp_hosts', ' '.join(hosts))
+        settings.setValue('esp_auto', self.main.esp_auto)
+        self.main.worker.cmds.put(('esp', hosts, self.main.esp_auto))
+
     def _scan(self):
         ble = self.main.worker.ble
         if ble:
@@ -2795,9 +3514,12 @@ class InfoDialog(QDialog):
         lines = []
         for dev, on in sorted(m.online.items()):
             d = m.devs.get(dev, {})
-            lines.append(tr('{} – {} via {}').format(d.get('name', dev), on.get('version', ''),
-                                                    ' + '.join(VIA_NAME[v] for v in on.get('vias', ()))))
+            lines.append(tr('{} – {} via {}').format(d.get('name', dev), on.get('version', ''), via_text(on)))
         self.connected.setText('<br>'.join(lines) or tr('none'))
+        found = tr(' (found automatically)')
+        self.esp_state.setText('<br>'.join(f'{host}{found if n.auto else ""}: {n.state}'
+                                           for host, n in sorted(m.worker.nets.items())) or
+                               (tr('none found yet') if m.esp_auto else ''))
         ble = m.worker.ble
         self.scan.setEnabled(bool(ble and ble.is_alive()))
         if not ble:
@@ -3028,7 +3750,9 @@ class InfoTab(QWidget):
 
         rows = [(tr('Version:'), full_version()), (tr('Author:'), f'{AUTHOR}, {link(WEBSITE)}'),
                 (tr('Source code:'), link(SOURCE)), (tr('License:'), 'GNU GPL v3'),
-                (tr('Database:'), os.path.abspath(db_path))]
+                (tr('Database:'), os.path.abspath(db_path)),
+                (tr('Log file:'), "<a href='{}'>{}</a>".format(QUrl.fromLocalFile(logs.log_path(db_path)).toString(),
+                                                              logs.log_path(db_path)))]
         text = QLabel(
             '<h2>BattBench</h2><p>' + tr('Battery test bench: tracking and analysis of rechargeable batteries') +
             '</p><table cellspacing="4">' + ''.join(f'<tr><td>{a}</td><td>{b}</td></tr>' for a, b in rows) +
@@ -3041,13 +3765,748 @@ class InfoTab(QWidget):
         lay.addWidget(text, 1)
 
 
+# ======================================================================= charge profiles (MC5000)
+def mc_mode_names():
+    """Mode names of the MC5000 programs in the UI language (the program stores the English ones)."""
+    return {'Charge': tr('Charge'), 'Storage': tr('Storage'), 'Discharge': tr('Discharge'), 'Cycle': tr('Cycle'),
+            'Refresh': tr('Refresh'), 'Break in': tr('Break in')}
+
+
+def profile_fields():
+    """(attribute, label, unit, shown(program)); the values to choose come from mc5000.choices()."""
+    nickel = lambda p: p.chem in ('NiMH', 'NiCd', 'Eneloop')                       # noqa: E731
+    lithium = lambda p: mc5000.CHEM[p.chem][3] > 0                                  # noqa: E731
+    cycling = lambda p: p.mode in ('Cycle', 'Refresh', 'Break in')                  # noqa: E731
+    return [('charge_ma', tr('Charge current'), 'mA', lambda p: p.mode != 'Discharge'),
+            ('discharge_ma', tr('Discharge current'), 'mA', lambda p: p.mode != 'Charge'),
+            ('capacity', tr('Capacity limit'), 'mAh', lambda p: True),
+            ('charge_mv', tr('Charge voltage'), 'mV', lambda p: p.mode != 'Discharge'),
+            ('discharge_mv', tr('Discharge cut-off'), 'mV', lambda p: p.mode != 'Charge'),
+            ('storage_mv', tr('Storage voltage'), 'mV', lambda p: lithium(p) and p.mode == 'Storage'),
+            ('charge_end_ma', tr('Charge end current'), 'mA', lambda p: lithium(p) and p.mode != 'Discharge'),
+            ('discharge_end_ma', tr('Discharge end current'), 'mA', lambda p: p.mode != 'Charge'),
+            ('cycles', tr('Cycles'), '', cycling),
+            ('rest_after_charge', tr('Rest after charging'), 'min', cycling),
+            ('rest_after_discharge', tr('Rest after discharging'), 'min', cycling),
+            ('delta_peak', tr('-ΔV end of charge'), 'mV', lambda p: nickel(p) and p.mode != 'Discharge'),
+            ('trickle_ma', tr('Trickle current afterwards'), 'mA', lambda p: nickel(p) and p.mode != 'Discharge'),
+            ('restart_mv', tr('Recharge below'), 'mV', lambda p: nickel(p) and p.mode != 'Discharge'),
+            ('timer', tr('Time limit'), 'min', lambda p: True),
+            # sent as the SkyRC app does, but without visible effect on the charger: not shown
+            ('temp_limit', tr('Temperature limit'), '°C', lambda p: False),
+            ('max_time', tr('Maximum time'), 'min', lambda p: False)]
+
+
+def field_text(attr, unit, v):
+    """A value of a program field as shown: "off" for 0 where the charger has an off."""
+    if attr in mc5000.OFF and v == 0:
+        return tr_data('off')
+    return f'{v} {unit}'.strip()
+
+
+def profile_text(p: mc5000.Program):
+    """Short summary, e.g. "NiMH · Cycle D>C × 2 · 1000 / 500 mA · 2500 mAh"."""
+    mode = mc_mode_names().get(p.mode, p.mode)
+    if p.mode in ('Cycle', 'Refresh', 'Break in'):
+        mode += f' {p.direction} × {p.cycles}' if p.mode == 'Cycle' else f' × {p.cycles}'
+    cur = f'{p.charge_ma} mA' if p.mode == 'Charge' else f'{p.discharge_ma} mA' if p.mode == 'Discharge' else \
+        f'{p.charge_ma} / {p.discharge_ma} mA'
+    return f'{p.chem} · {mode} · {cur} · ≤ {p.capacity} mAh'
+
+
+class ProgramEditor(QWidget):
+    """Form for an MC5000 program: name, battery type, task, Eneloop type, order and the values that apply to the
+    task, each chosen from the values the SkyRC app offers. A new battery type, task or Eneloop type fills in the
+    app's defaults for it."""
+
+    def __init__(self):
+        super().__init__()
+        self.extra = {}                       # values of the program the form does not show (kept as they are)
+        right = QVBoxLayout(self)
+        right.setContentsMargins(0, 0, 0, 0)
+        form = QFormLayout()
+        self.name = QLineEdit()
+        form.addRow(tr('Name'), self.name)
+        self.chem = QComboBox()
+        self.chem.setMaximumWidth(220)
+        self.chem.addItems(mc5000.CHEMISTRIES)
+        self.chem.currentTextChanged.connect(lambda _t: self._reset())
+        form.addRow(tr('Battery type'), self.chem)
+        self.mode = QComboBox()
+        self.mode.setMaximumWidth(220)
+        self.mode.currentIndexChanged.connect(lambda _i: self._reset())
+        form.addRow(tr('Task'), self.mode)
+        self.eneloop = QComboBox()
+        self.eneloop.setMaximumWidth(220)
+        for k, e in enumerate(mc5000.ENELOOP):
+            self.eneloop.addItem(e[0], k)
+        self.eneloop.currentIndexChanged.connect(lambda _i: self._reset())
+        self.eneloop_label = QLabel(tr('Eneloop type'))
+        form.addRow(self.eneloop_label, self.eneloop)
+        self.direction = QComboBox()
+        self.direction.setMaximumWidth(220)
+        self.direction.addItems(mc5000.DIRECTIONS)
+        self.dir_label = QLabel(tr('Order'))
+        form.addRow(self.dir_label, self.direction)
+        self.fields = {}
+        for attr, label, unit, _shown in profile_fields():
+            c = QComboBox()
+            c.setMaximumWidth(160)
+            c.setMaxVisibleItems(15)
+            c.currentIndexChanged.connect(lambda _i: self._update())
+            lab = QLabel(label)
+            form.addRow(lab, c)
+            self.fields[attr] = (lab, c, unit)
+        right.addLayout(form)
+        self.problems = QLabel()
+        self.problems.setStyleSheet(f'color: {COLORS["error"]};')
+        self.problems.setWordWrap(True)
+        right.addWidget(self.problems)
+
+    def _set_choices(self, attr, chem, value):
+        """The app's values for this field and battery type; a stored value outside them is kept as a choice."""
+        _lab, c, unit = self.fields[attr]
+        vals = mc5000.choices(attr, chem)
+        if value not in vals:
+            vals = sorted(vals + [value])
+        c.blockSignals(True)
+        c.clear()
+        for v in vals:
+            c.addItem(field_text(attr, unit, v), v)
+        c.setCurrentIndex(max(0, c.findData(value)))
+        c.blockSignals(False)
+
+    def fill(self, p, name):
+        for w in (self.chem, self.mode, self.eneloop):
+            w.blockSignals(True)
+        self.name.setText(name)
+        self.chem.setCurrentText(p.chem)
+        self._set_modes(p.chem, p.mode)
+        self.eneloop.setCurrentIndex(max(0, self.eneloop.findData(p.eneloop)))
+        self.direction.setCurrentText(p.direction)
+        for w in (self.chem, self.mode, self.eneloop):
+            w.blockSignals(False)
+        self._set_values(p)
+
+    def _set_values(self, p):
+        self.extra = dict(storage_mv=p.storage_mv)
+        for attr in self.fields:
+            value = getattr(p, attr)
+            if attr == 'storage_mv' and not value:
+                value = mc5000.CHEM[p.chem][3]
+            self._set_choices(attr, p.chem, value)
+        self._update()
+
+    def _set_modes(self, chem, mode):
+        names = mc_mode_names()
+        self.mode.blockSignals(True)
+        self.mode.clear()
+        for m in mc5000.CHEM[chem][0]:
+            self.mode.addItem(names.get(m, m), m)
+        i = self.mode.findData(mode)
+        self.mode.setCurrentIndex(max(0, i))
+        self.mode.blockSignals(False)
+
+    def _reset(self):
+        """Another battery type, task or Eneloop type: the SkyRC app's defaults for it (as the app does)."""
+        chem = self.chem.currentText()
+        self._set_modes(chem, self.mode.currentData())    # the battery type's tasks (the same one if it has it)
+        d = mc5000.defaults(chem, self.mode.currentData() or 'Charge', self.eneloop.currentData() or 0)
+        self.direction.setCurrentText(d.direction)
+        self._set_values(d)
+
+    def program(self) -> mc5000.Program:
+        p = mc5000.Program(name=self.name.text().strip(), chem=self.chem.currentText(),
+                           mode=self.mode.currentData() or 'Charge', direction=self.direction.currentText(),
+                           eneloop=self.eneloop.currentData() or 0)
+        for attr, (_lab, c, _u) in self.fields.items():
+            if c.currentData() is not None:
+                setattr(p, attr, c.currentData())
+        if mc5000.CHEM[p.chem][3] == 0:
+            p.storage_mv = 0                  # nickel-like: no storage voltage
+        return p
+
+    def _update(self):
+        p = self.program()
+        for attr, label, _u, shown in profile_fields():
+            lab, c, _unit = self.fields[attr]
+            lab.setVisible(shown(p))
+            c.setVisible(shown(p))
+        self.dir_label.setVisible(p.mode == 'Cycle')
+        self.direction.setVisible(p.mode == 'Cycle')
+        self.eneloop_label.setVisible(p.chem == 'Eneloop')
+        self.eneloop.setVisible(p.chem == 'Eneloop')
+        self.problems.setText('; '.join(tr_data(x) for x in p.problems()))
+
+    def check(self, need_name=True):
+        """The program if it can be used (and saved: with a name), else None after telling why."""
+        p = self.program()
+        if need_name and not p.name:
+            QMessageBox.information(self, tr('Profiles'), tr('Please give the profile a name.'))
+            return None
+        if p.problems():
+            QMessageBox.warning(self, tr('Profiles'), '; '.join(tr_data(x) for x in p.problems()))
+            return None
+        return p
+
+
+class ProfileTab(QWidget):
+    """Charge profiles for the SkyRC MC5000, stored in the database. Started on slots from the tiles (right
+    click); nothing goes to the charger from here."""
+
+    def __init__(self, db: DB):
+        super().__init__()
+        self.db = db
+        self.pid = None
+        lay = QHBoxLayout(self)
+        left = QVBoxLayout()
+        self.list = QListWidget()
+        self.list.currentItemChanged.connect(lambda cur, _old: self.show_profile(cur.data(Qt.UserRole) if cur
+                                                                                 else None))
+        left.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        for text, fn in ((tr('New'), self.new), (tr('Copy'), self.copy), (tr('Delete'), self.delete)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        left.addLayout(row)
+        hint = QLabel(tr('Right click on a slot of an MC5000 to start a profile there, also on several slots.'))
+        hint.setWordWrap(True)
+        left.addWidget(hint)
+        lay.addLayout(left, 1)
+
+        right = QVBoxLayout()
+        self.editor = ProgramEditor()
+        right.addWidget(self.editor)
+        save = QPushButton(tr('Save'))
+        save.clicked.connect(self.save)
+        right.addWidget(save, 0, Qt.AlignLeft)
+        right.addStretch()
+        box = QWidget()
+        box.setLayout(right)
+        lay.addWidget(scrolled(box), 2)
+        self.load()
+
+    def load(self, select=None):
+        if select is None:
+            select = self.pid
+        self.list.blockSignals(True)
+        self.list.clear()
+        for pid, name, data in self.db.profiles():
+            it = QListWidgetItem(f'{name}\n{profile_text(mc5000.Program.from_dict(data))}')
+            it.setData(Qt.UserRole, pid)
+            self.list.addItem(it)
+            if pid == select:
+                self.list.setCurrentItem(it)
+        self.list.blockSignals(False)
+        if self.list.currentItem() is None and self.list.count():
+            self.list.setCurrentRow(0)
+        self.show_profile(self.list.currentItem().data(Qt.UserRole) if self.list.currentItem() else None)
+
+    def show_profile(self, pid):
+        self.pid = pid
+        row = next(((n, d) for i, n, d in self.db.profiles() if i == pid), None)
+        p = mc5000.Program.from_dict(row[1]) if row else mc5000.defaults('NiMH')
+        self.editor.fill(p, row[0] if row else p.name)
+
+    def save(self):
+        p = self.editor.check()
+        if p:
+            self.pid = self.db.save_profile(self.pid, p.name, p.to_dict())
+            self.load(self.pid)
+
+    def new(self):
+        """New profile in its own window, with the defaults of the battery type shown now."""
+        self._create(mc5000.defaults(self.editor.chem.currentText() or 'NiMH'), '')
+
+    def copy(self):
+        p = self.editor.program()
+        self._create(p, p.name + ' ' + tr('(copy)'))
+
+    def _create(self, p, name):
+        dlg = ProfileDialog(self, 'new', p, name)
+        if dlg.exec() == QDialog.Accepted:
+            q = dlg.program()
+            self.pid = self.db.save_profile(None, q.name, q.to_dict())
+            self.load(self.pid)
+
+    def delete(self):
+        if self.pid is None:
+            return
+        if QMessageBox.question(self, tr('Profiles'),
+                                tr('Delete the profile "{}"?').format(self.editor.name.text())) == QMessageBox.Yes:
+            self.db.delete_profile(self.pid)
+            self.pid = None
+            self.load()
+
+
+class ProfileDialog(QDialog):
+    """Edit an MC5000 program in a dialog. kind 'new': a new profile (Save creates it); 'edit': a saved profile (Save
+    updates it, Clone saves a copy as a new one); 'current': the current settings of slots, kept only for their next
+    start (Use), or saved as a new profile. action() tells what was chosen: 'save', 'new' or 'use'."""
+
+    def __init__(self, parent, kind, p, name='', note=''):
+        super().__init__(parent)
+        self._action = None
+        self.setWindowTitle({'new': tr('New profile'), 'edit': tr('Edit profile'),
+                             'current': tr('Current settings')}[kind])
+        lay = QVBoxLayout(self)
+        if note:
+            lab = QLabel(note)
+            lab.setWordWrap(True)
+            lay.addWidget(lab)
+        self.editor = ProgramEditor()
+        self.editor.fill(p, name)
+        lay.addWidget(self.editor)
+        box = QDialogButtonBox(QDialogButtonBox.Cancel)
+        buttons = {'new': [(tr('Save as new profile'), 'new')],
+                   'edit': [(tr('Save'), 'save'), (tr('Clone'), 'new')],
+                   'current': [(tr('Use'), 'use'), (tr('Create new profile'), 'new')]}[kind]
+        for text, action in buttons:
+            b = box.addButton(text, QDialogButtonBox.ActionRole)
+            b.clicked.connect(lambda _c=False, a=action: self._done(a))
+        box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+    def _done(self, action):
+        if self.editor.check(need_name=action != 'use'):
+            self._action = action
+            self.accept()
+
+    def action(self):
+        return self._action
+
+    def program(self):
+        return self.editor.program()
+
+
+class ControlPanel(QFrame):
+    """Right of the tiles of a charger BattBench can control (MC5000): the chosen slots (click, Ctrl + click for
+    more), what runs there and with which program, start a profile, stop, save the program as a profile."""
+
+    def __init__(self, main, dev, slots):
+        super().__init__()
+        self.main, self.dev, self.slots = main, dev, slots
+        self.chosen = []
+        self.setFrameShape(QFrame.StyledPanel)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 6)                 # title bar level with the tiles' title bars
+        bar = QFrame()
+        bar.setStyleSheet(f'background:{CONTROL_COLOR}; color:white;')
+        bar.setFixedHeight(HEAD_HEIGHT)
+        head = QHBoxLayout(bar)
+        head.setContentsMargins(6, 0, 6, 0)
+        title = QLabel('<b>' + tr('Charger control') + '</b>')
+        head.addWidget(title)
+        head.addStretch()
+        self.buttons = []
+        for s in range(slots):
+            b = QToolButton()
+            b.setText(str(s + 1))
+            b.setCheckable(True)
+            b.setStyleSheet('QToolButton { background: white; color: black; border: 1px solid #888; padding: 0 6px; }'
+                            'QToolButton:checked { background: #1a237e; color: white; border: 1px solid white;'
+                            ' font-weight: bold; }')
+            b.setFixedHeight(HEAD_HEIGHT - 6)
+            b.setToolTip(tr('Slot {} (click a tile, Ctrl + click for several)').format(s + 1))
+            b.clicked.connect(lambda _c, s=s: self._toggle(s))
+            head.addWidget(b)
+            self.buttons.append(b)
+        self.settings = QToolButton()
+        self.settings.setText('⚙')
+        self.settings.setToolTip(tr('Charger settings (sounds, backlight, screen timeout) and Bluetooth connection'))
+        self.settings.setStyleSheet('QToolButton { background: white; color: black; border: 1px solid #888;'
+                                    ' padding: 0 4px; }')
+        self.settings.setFixedHeight(HEAD_HEIGHT - 6)
+        self.settings.clicked.connect(lambda: self.main.charger_settings(self.dev))
+        head.addWidget(self.settings)
+        lay.addWidget(bar)
+        self.info = QLabel()
+        self.info.setWordWrap(True)
+        self.info.setTextFormat(Qt.RichText)
+        self.info.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.info.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        box = QScrollArea()                   # long program details scroll: the panel stays as low as the tiles
+        box.setWidgetResizable(True)
+        box.setFrameShape(QFrame.NoFrame)
+        box.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        box.setMinimumHeight(3 * self.fontMetrics().lineSpacing())
+        box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Ignored)
+        box.setWidget(self.info)
+        lay.addWidget(box, 1)
+        row = QHBoxLayout()
+        self.combo = QComboBox()
+        self.combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.combo.setMinimumContentsLength(12)
+        self.combo.currentIndexChanged.connect(lambda _i: self.refresh(self.chosen))
+        row.addWidget(self.combo, 1)
+        self.start = QPushButton(tr('Start'))
+        self.start.clicked.connect(lambda: self.main.start_slots(self.dev, self.chosen, self.combo.currentData()))
+        row.addWidget(self.start)
+        self.stop = QPushButton(tr('Stop'))
+        self.stop.clicked.connect(lambda: self.main.stop_slots(self.dev, self.chosen))
+        row.addWidget(self.stop)
+        menu = QMenu(self)                    # profile actions in one button: one row less
+        menu.setToolTipsVisible(True)
+        self.edit = menu.addAction(tr('Edit …'))
+        self.edit.setToolTip(tr('Edit the chosen profile; with "Current settings": change them for the next start'))
+        self.edit.triggered.connect(lambda: self.main.edit_profile(self.dev, self.chosen, self.combo.currentData()))
+        self.new = menu.addAction(tr('New …'))
+        self.new.setToolTip(tr('New profile with the defaults of the SkyRC app'))
+        self.new.triggered.connect(lambda: self.main.new_profile(self.dev))
+        self.from_slot = menu.addAction(tr('Create new from current settings …'))
+        self.from_slot.setToolTip(tr('New profile with the current settings of the slot as template'))
+        self.from_slot.triggered.connect(lambda: self.main.new_profile_from_slot(self.dev, self.chosen))
+        prof = QPushButton(tr('Profile'))
+        prof.setMenu(menu)
+        row.addWidget(prof)
+        lay.addLayout(row)
+
+    def select_profile(self, pid):
+        self._profiles()
+        self.combo.setCurrentIndex(max(0, self.combo.findData(pid)))
+
+    def _toggle(self, slot):
+        chosen = set(self.main.ctrl_sel.get(self.dev, ())) ^ {slot}
+        self.main.ctrl_sel[self.dev] = chosen or {slot}
+        self.main._mark(self.main.sel)
+
+    def _profiles(self):
+        last = self.main.db.setting('last_profile')
+        cur = self.combo.currentData()
+        items = [(tr('Current settings'), 'current')] + [(n, i) for i, n, _d in self.main.db.profiles()]
+        if [(self.combo.itemText(k), self.combo.itemData(k)) for k in range(self.combo.count())] != items:
+            self.combo.blockSignals(True)
+            self.combo.clear()
+            for n, i in items:
+                self.combo.addItem(n, i)
+            want = cur if cur is not None else (int(last) if last and str(last).isdigit() else 'current')
+            self.combo.setCurrentIndex(max(0, self.combo.findData(want)))
+            self.combo.blockSignals(False)
+
+    def program_of(self, slot):
+        """(text about the slot's program, mc5000.Program or None, key to compare slots)."""
+        smp = self.main.live.get((self.dev, slot))
+        st = mc5000.from_status(bytes.fromhex(smp['raw'])) if smp and smp.get('raw') else None
+        summ = self.main.slot_summary(self.dev, slot)      # currents as the charger reports them, or None
+        info = self.main.slot_program(self.dev, slot)
+        p = self.main.known_program(self.dev, slot)
+        profiles = [(n, mc5000.Program.from_dict(d)) for _i, n, d in self.main.db.profiles()]
+        names = mc_mode_names()
+        if p:
+            match = next((n for n, q in profiles if mc5000.same(p, q)), None)
+            when = fmt_t(info['t']) if info.get('t') else ''
+            head = (tr('Profile <b>{}</b>').format(html_escape(match)) if match else
+                    tr('Started from BattBench, no saved profile matches it.')) + (f' · {when}' if when else '')
+            return head + '<br>' + profile_details(p), p, ('p', json.dumps(dict(p.to_dict(), name='')))
+        if st is None:
+            return tr('No data from this slot yet.'), None, ('none',)
+        chem, mode = st
+        cands = [n for n, q in profiles if (q.chem, q.mode) == st and (not summ or mc5000.same_currents(q, summ))]
+        vals = [chem, names.get(mode, mode or '?')]
+        key = ('s', chem, mode)
+        if summ:
+            vals += [tr('charge {} A').format(QLocale(i18n.current).toString(summ['charge_ma'] / 1000, 'f', 1)),
+                     tr('discharge {} A').format(QLocale(i18n.current).toString(summ['discharge_ma'] / 1000, 'f', 1))]
+            key += (summ['charge_ma'], summ['discharge_ma'])
+        text = '<b>' + tr('Set on the charger:') + '</b> ' + html_escape(' · '.join(vals)) + \
+            '<br><span style="color:gray">' + tr('The charger does not report voltages, rests, cycles and the other '
+                                                 'values.') + '</span>'
+        if cands:
+            text += '<br>' + tr('Fits: {}').format(html_escape(', '.join(cands)))
+        return text, None, key
+
+    def refresh(self, chosen):
+        self.chosen = [s for s in chosen if s < self.slots]
+        for s, b in enumerate(self.buttons):
+            b.setChecked(s in self.chosen)
+        self._profiles()
+        on = self.main.online.get(self.dev) or {}
+        ready = bool(set(on.get('vias', ())) & {'ble', 'net'}) and not on.get('stale')
+        if ready:
+            for s in self.chosen:
+                self.main.want_summary(self.dev, s)
+        parts = []
+        if not ready:
+            parts.append('<span style="color:%s">%s</span>' % (COLORS['error'], tr(
+                'Not connected over Bluetooth or a BattBench-ESP: starting and stopping is not possible.')))
+        if len(self.chosen) == 1:
+            s = self.chosen[0]
+            smp = self.main.live.get((self.dev, s))
+            state = mode_name(smp) if smp else tr('no data')
+            text, _p, _key = self.program_of(s)
+            parts.append('<b>' + tr('Slot {}').format(s + 1) + f'</b> · {html_escape(state)}')
+            parts.append(text)
+        elif self.chosen:
+            progs = [self.program_of(s) for s in self.chosen]
+            parts.append('<b>' + tr('Slots {}').format(', '.join(str(s + 1) for s in self.chosen)) + '</b>')
+            if len({k for _t, _p, k in progs}) == 1:
+                parts.append(progs[0][0])
+            else:
+                parts.append(tr('Different settings – choose only one slot to see them.'))
+        else:
+            parts.append(tr('Click a slot tile (Ctrl + click for several).'))
+        temp = [self.main.temp_progs[(self.dev, s)] for s in self.chosen if (self.dev, s) in self.main.temp_progs]
+        if self.combo.currentData() == 'current' and temp:
+            parts.append('<br><i>' + tr('Changed current settings, used at the next start:') + '</i><br>' +
+                         profile_details(temp[0]))
+        self.info.setText('<br>'.join(parts))
+        self.start.setEnabled(ready and bool(self.chosen))
+        self.stop.setEnabled(ready and bool(self.chosen))
+        self.from_slot.setEnabled(bool(self.chosen))
+        self.edit.setEnabled(self.combo.currentData() != 'current' or bool(self.chosen))
+
+
+def profile_details(p: mc5000.Program):
+    """Every value of a program that applies to its task, as HTML lines."""
+    lines = [html_escape(profile_text(p))]
+    vals = []
+    if p.mode == 'Cycle':
+        vals.append(tr('Order') + ' ' + p.direction)
+    if p.chem == 'Eneloop':
+        vals.append(tr('Eneloop type') + ' ' + mc5000.ENELOOP[p.eneloop][0])
+    for attr, label, unit, shown in profile_fields():
+        if shown(p) and attr not in ('charge_ma', 'discharge_ma', 'capacity'):
+            vals.append(f'{label} {field_text(attr, unit, getattr(p, attr))}')
+    lines.append('<span style="color:gray">' + html_escape(' · '.join(vals)) + '</span>')
+    return '<br>'.join(lines)
+
+
+class ChargerSettingsDialog(QDialog):
+    """System settings of an MC5000 (sounds, backlight, screen timeout): read from the charger when it opens. Below
+    them its Bluetooth connection: pause / switch off / on (to use the SkyRC app), the BattBench-ESP's web page."""
+    BT_POLL_MS = 5000
+
+    def __init__(self, parent, dev):
+        super().__init__(parent)
+        self.dev, self.read, self.cmds = dev, None, parent.worker.cmds
+        self.web_url = None
+        self.setWindowTitle(tr('Charger settings'))
+        lay = QVBoxLayout(self)
+        self.state = QLabel(tr('Reading the settings from the charger …'))
+        self.state.setWordWrap(True)
+        lay.addWidget(self.state)
+        form = QFormLayout()
+        self.combos = {}
+        rows = [('key_beep', tr('Key beep'), [(tr_data(t), i) for i, t in enumerate(mc5000.VOLUMES)]),
+                ('notify_beep', tr('Notification sound'), [(tr_data(t), i) for i, t in enumerate(mc5000.VOLUMES)]),
+                ('done_tone', tr('Completion tone'), [(tr_data(t), i) for i, t in enumerate(mc5000.DONE_TONES)]),
+                ('backlight', tr('Backlight'), [(tr_data(t), i + 1) for i, t in enumerate(mc5000.LIGHTS)]),
+                ('timeout', tr('Screen timeout'),
+                 [(tr_data('off') if m == 0 else tr('{} min').format(m), m) for m in mc5000.TIMEOUTS])]
+        for attr, label, items in rows:
+            c = QComboBox()
+            for text, v in items:
+                c.addItem(text, v)
+            c.setEnabled(False)
+            form.addRow(label, c)
+            self.combos[attr] = c
+        lay.addLayout(form)
+        grp = QGroupBox(tr('Bluetooth connection'))
+        g = QVBoxLayout(grp)
+        note = QLabel(tr('The charger takes only one Bluetooth connection. Pause or switch it off here to use the '
+                         'SkyRC app; this applies to BattBench and every BattBench-ESP.'))
+        note.setWordWrap(True)
+        note.setStyleSheet('color: palette(placeholder-text);')
+        g.addWidget(note)
+        self.bt_state = QLabel(tr('Asking …'))
+        self.bt_state.setWordWrap(True)
+        self.bt_state.setTextFormat(Qt.RichText)
+        g.addWidget(self.bt_state)
+        row = QHBoxLayout()
+        for action, text in (('pause', tr('Pause 5 min')), ('off', tr('Switch off')), ('on', tr('Switch on'))):
+            b = QPushButton(text)
+            b.clicked.connect(lambda _c, a=action: self.bt(a))
+            row.addWidget(b)
+        row.addStretch()
+        self.web = QPushButton(tr('BattBench-ESP web page …'))
+        self.web.setToolTip(tr('Opens the web page of the BattBench-ESP in the browser'))
+        self.web.clicked.connect(lambda: self.web_url and QDesktopServices.openUrl(QUrl(self.web_url)))
+        self.web.hide()
+        row.addWidget(self.web)
+        g.addLayout(row)
+        lay.addWidget(grp)
+        self.bt_timer = QTimer(self)                          # pause countdown, connection coming back
+        self.bt_timer.timeout.connect(lambda: self.bt('status'))
+        self.bt_timer.start(self.BT_POLL_MS)
+        self.bt('status')
+        self.box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        self.box.accepted.connect(self.accept)
+        self.box.rejected.connect(self.reject)
+        self.box.button(QDialogButtonBox.Save).setEnabled(False)
+        lay.addWidget(self.box)
+
+    def answer(self, d):
+        if d.get('error') or not d.get('data'):
+            self.state.setText('<span style="color:%s">%s</span>' % (COLORS['error'], html_escape(
+                d.get('error') or tr('no answer'))))
+            return
+        self.read = d['data']
+        for attr, c in self.combos.items():
+            c.setCurrentIndex(max(0, c.findData(self.read[attr])))
+            c.setEnabled(True)
+        self.state.setText(tr('Settings of the charger. Save sends them to it.'))
+        self.box.button(QDialogButtonBox.Save).setEnabled(True)
+
+    def bt(self, action):
+        self.cmds.put(('bt', self.dev, action))
+
+    def bt_answer(self, d):
+        """State of the Bluetooth connections from the worker (charger_info kind 'bt')."""
+        def left(secs):
+            secs = max(0, int(secs))
+            return tr('paused, {} left').format(f'{secs // 60}:{secs % 60:02d} min')
+        lines = []
+        data = d.get('data') or {}
+        direct = data.get('direct')
+        if direct:
+            until = direct['until']
+            state = (skyrc_unused_names().get(direct['unused'], direct['unused']) if direct['unused'] else
+                     tr('switched off') if until == float('inf') else
+                     left(until - time.time()) if until else
+                     tr('connected') if direct['connected'] else tr('may connect'))
+            lines.append('<b>' + tr('BattBench (Bluetooth of this PC):') + '</b> ' + html_escape(state))
+        for e in data.get('esp', ()):
+            st = e['state']
+            state = (tr('not reachable') if e['on'] is None else tr('switched off') if st == 'off' else
+                     left(e['paused_secs']) if st == 'paused' else
+                     tr('connected') if st == 'connected' else st)
+            lines.append('<b>' + 'BattBench-ESP ' + html_escape(e['host']) + ':</b> ' + html_escape(state))
+        if d.get('error'):
+            lines.append('<span style="color:%s">%s</span>' % (COLORS['error'], html_escape(d['error'])))
+        self.bt_state.setText('<br>'.join(lines) or tr('No Bluetooth connection known.'))
+        esp = data.get('esp') or []
+        self.web_url = esp[0]['url'] if esp else None
+        self.web.setVisible(bool(esp))
+
+    def values(self):
+        out = dict(self.read)
+        out.update({attr: c.currentData() for attr, c in self.combos.items()})
+        return out
+
+    def changed(self):
+        return self.read is not None and self.values() != self.read
+
+
+class ReportDialog(QDialog):
+    """Choices for "Export report …": language, format (HTML or PDF), a chart per phase (remembered)."""
+
+    def __init__(self, parent, has_phases):
+        super().__init__(parent)
+        self.setWindowTitle(tr('Export report'))
+        settings = QSettings('battbench', 'battbench')
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+        self.language = QComboBox()
+        self.language.addItem(tr('Language of the app ({})').format(LANGUAGES.get(i18n.current, i18n.current)), '')
+        for k, name in LANGUAGES.items():
+            self.language.addItem(name, k)
+        self.language.setCurrentIndex(max(0, self.language.findData(settings.value('report_lang', ''))))
+        form.addRow(tr('Language:'), self.language)
+        lay.addLayout(form)
+        self.phases = QCheckBox(tr('A chart for each charge / discharge phase'))
+        self.phases.setChecked(has_phases and settings.value('report_phases', True, type=bool))
+        self.phases.setEnabled(has_phases)
+        if not has_phases:
+            self.phases.setToolTip(tr('This session has only one phase.'))
+        lay.addWidget(self.phases)
+        self.format = QComboBox()
+        self.format.addItem(tr('HTML page (charts embedded, opens in any browser)'), 'html')
+        self.format.addItem(tr('PDF (DIN A4)'), 'pdf')
+        self.format.setCurrentIndex(max(0, self.format.findData(settings.value('report_format', 'html'))))
+        form.addRow(tr('Format:'), self.format)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText(tr('Export …'))
+        bb.accepted.connect(self._ok)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def lang(self):
+        return self.language.currentData() or i18n.current
+
+    def _ok(self):
+        settings = QSettings('battbench', 'battbench')
+        settings.setValue('report_lang', self.language.currentData())
+        if self.phases.isEnabled():
+            settings.setValue('report_phases', self.phases.isChecked())
+        settings.setValue('report_format', self.format.currentData())
+        self.accept()
+
+
+class StartDialog(QDialog):
+    """Start a profile on a slot of an MC5000, optionally on further slots with the same profile."""
+
+    def __init__(self, parent, profiles, slot, states, running, last=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr('Start a profile'))
+        self.setMinimumWidth(380)
+        self.profiles = profiles
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+        self.combo = QComboBox()
+        for pid, name, _d in profiles:
+            self.combo.addItem(name, pid)
+        if last is not None:
+            self.combo.setCurrentIndex(max(0, self.combo.findData(int(last)) if str(last).isdigit() else 0))
+        form.addRow(tr('Profile'), self.combo)
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+        form.addRow('', self.summary)
+        lay.addLayout(form)
+        lay.addWidget(QLabel(tr('Slots (the same profile on each):')))
+        self.checks = []
+        for i, state in enumerate(states):
+            c = QCheckBox(tr('Slot {}').format(i + 1) + f'  ({state})')
+            c.setChecked(i == slot)
+            c.toggled.connect(self._update)
+            lay.addWidget(c)
+            self.checks.append(c)
+        self.running = running
+        self.warn = QLabel()
+        self.warn.setWordWrap(True)
+        self.warn.setStyleSheet(f'color: {COLORS["error"]};')
+        lay.addWidget(self.warn)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        self.start = self.buttons.addButton(tr('Start'), QDialogButtonBox.AcceptRole)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        lay.addWidget(self.buttons)
+        self.combo.currentIndexChanged.connect(self._update)
+        self._update()
+
+    def program(self):
+        pid = self.combo.currentData()
+        data = next((d for i, _n, d in self.profiles if i == pid), {})
+        return mc5000.Program.from_dict(data)
+
+    def chosen(self):
+        return [i for i, c in enumerate(self.checks) if c.isChecked()]
+
+    def _update(self, *_):
+        p = self.program()
+        self.summary.setText(profile_text(p))
+        problems = p.problems()
+        busy = [i + 1 for i in self.chosen() if self.running[i]]
+        texts = []
+        if problems:
+            texts.append('; '.join(tr_data(x) for x in problems))
+        if busy:
+            texts.append(tr('Slot {} is working: its task is replaced and starts again from zero.').format(
+                ', '.join(map(str, busy))))
+        self.warn.setText('\n'.join(texts))
+        self.start.setEnabled(bool(self.chosen()) and not problems)
+
+    def result_values(self):
+        return self.combo.currentData(), self.program(), self.chosen()
+
+
 class DeviceTab(QWidget):
     """Known chargers: name (only stored here, never written to the charger), model, identity, last seen."""
     changed = Signal()
     def __init__(self, db: DB):
         super().__init__()
         self.db = db
-        self.online = {}                  # dev -> connections ('usb', 'ble')
+        self.online = {}                  # dev -> (connections ('usb', 'ble', 'net'), their text)
         lay = QVBoxLayout(self)
         top = QHBoxLayout()
         b = QPushButton(tr('Rename …'))
@@ -3066,10 +4525,10 @@ class DeviceTab(QWidget):
         devs = self.db.devices()
         self.table.setRowCount(len(devs))
         for i, d in enumerate(devs):
-            vias = self.online.get(d['id'])
+            vias, text = self.online.get(d['id'], (None, ''))
             on = vias is not None
             vals = [d['name'], d['model'], d['slots'], d['version'], d['key'] + (f" / {d['alt_key']}" if d['alt_key'] else ''),
-                    fmt_t(d['last_seen']), tr('connected ({})').format(' + '.join(VIA_NAME[v] for v in vias)) if on else '–']
+                    fmt_t(d['last_seen']), tr('connected ({})').format(text) if on else '–']
             for j, v in enumerate(vals):
                 it = QTableWidgetItem()
                 it.setData(Qt.DisplayRole, v)
@@ -3081,7 +4540,7 @@ class DeviceTab(QWidget):
                 self.table.setItem(i, j, it)
 
     def set_online(self, online):
-        now = {dev: tuple(on.get('vias', ())) for dev, on in online.items()}
+        now = {dev: (tuple(on.get('vias', ())), via_text(on)) for dev, on in online.items()}
         if now != self.online:
             self.online = now
             self.load()
@@ -3102,11 +4561,15 @@ class MainWindow(QMainWindow):
     COLS = ['start', 'dev', 'slot', 'task', 'status', 'battery', 'detected', 'nominal', 'dis', 'pct', 'chg', 'rmin',
             'tmax', 'grade', 'dur', 'label']
 
-    def __init__(self, db_path, source, a4='both', bt=True):
+    def __init__(self, db_path, source, a4='both', bt=True, esp=(), esp_auto=True, skyrc='auto', skyrc_chosen=True):
         super().__init__()
         self.setWindowTitle(f'BattBench {__version__}')
         self.source, self.a4 = source, a4
+        self.esp = list(esp)           # BattBench-ESP hosts entered by hand
+        self.esp_auto = esp_auto       # and the ones found by mDNS
+        self.skyrc = skyrc             # SKYRC_MODES key
         self.t_start = time.time()     # tiles only for chargers connected / sending data in this run
+        self.auto_pick = True          # after the start: jump to the first charging (else full) slot once
         self.resize(1500, 950)
         self.db = DB(db_path)
         self.devs = {}                 # dev -> row of the devices table
@@ -3120,6 +4583,11 @@ class MainWindow(QMainWindow):
         self.rows = {}                 # dev -> dict(tab, page, tiles) of the chargers shown
         self.shown_dev = None          # charger whose tiles are visible
         self.last_slot = {}            # dev -> slot selected last on that charger
+        self.ctrl_sel = {}             # dev -> slots chosen for the control panel (Ctrl + click: several)
+        self.summaries = {}            # (dev, slot) -> dict(t, key, data) of the last 5F answer (MC5000)
+        self.asking = set()            # (dev, slot) with a 5F query under way
+        self.settings_dlg = None       # open ChargerSettingsDialog
+        self.temp_progs = {}           # (dev, slot) -> mc5000.Program: changed current settings for the next start
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -3153,6 +4621,7 @@ class MainWindow(QMainWindow):
         self.result.save.connect(self.save_meta)
         self.result.save_label.connect(lambda sid, text: self.worker.cmds.put(('label', sid, text)))
         self.result.new_battery.connect(self.new_battery_for_session)
+        self.result.export_report.connect(self.export_shown)
         self.result.phase_clicked.connect(self.plot.show_phase)          # phase list and chart stay in step
         self.plot.phase_changed.connect(self.result.mark_phase)
         hsplit.addWidget(self.result)
@@ -3165,13 +4634,15 @@ class MainWindow(QMainWindow):
         self.table.autofilter.header.desc_first = {self.COLS.index('grade')}         # best first
         self.table.sortByColumn(0, Qt.DescendingOrder)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)      # Ctrl / Shift: several, to delete
-        row_menu(self.table, None, self.delete_sessions, enter=self.result.battery.setFocus)
+        row_menu(self.table, None, self.delete_sessions, enter=self.result.battery.setFocus, extra=[
+            (tr('Export report …'), lambda: self.export_session(selected_ids(self.table)[0]))])
         self.table.currentCellChanged.connect(self._row_changed)    # click or arrow keys
         self.table.cellClicked.connect(self._row_clicked)           # same row again (e.g. after a slot view)
         self.table.cellDoubleClicked.connect(self._row_double_clicked)
         self.tabs.addTab(self.table, tr('Sessions'))
         self.btab = BatteryTab(self.db)
         self.btab.open_session.connect(self.open_session)
+        self.btab.export_session.connect(self.export_session)
         self.btab.changed.connect(self.battery_changed)
         self.btab.models_changed.connect(self.models_changed)
         self.btab.sessions_deleted.connect(lambda: (self.load_tables(), self.stab.refresh_stats()))
@@ -3183,6 +4654,8 @@ class MainWindow(QMainWindow):
         self.dtab = DeviceTab(self.db)
         self.dtab.changed.connect(self.devices_renamed)
         self.tabs.addTab(self.dtab, tr('Chargers'))
+        self.ptab = ProfileTab(self.db)
+        self.tabs.addTab(self.ptab, tr('Profiles'))
         self.stab = SettingsTab(self.db)
         self.stab.deleted_changed.connect(self.deleted_changed)
         self.stab.compressed.connect(self.data_changed)
@@ -3191,22 +4664,40 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(scrolled(InfoTab(db_path)), tr('Info'))
         vsplit.addWidget(self.tabs)
         vsplit.setSizes([200, 535, 215])          # tiles, chart + result, tables
+        vsplit.setStretchFactor(0, 0)             # a taller window goes to the chart and the tables
+        vsplit.setCollapsible(0, False)           # the tiles never get cut off
         root.addWidget(vsplit, 1)
         self.setCentralWidget(central)
 
+        self.st_esp_icon, self.st_esp = QLabel(), QLabel()      # BattBench-ESP bridges and their address
+        self.st_esp_icon.setPixmap(via_pixmap(('net',), self.palette().text().color().name()))
+        for w in (self.st_esp_icon, self.st_esp):
+            w.hide()
+            self.statusBar().addPermanentWidget(w)
         self.st_conn = QLabel('')
         self.statusBar().addPermanentWidget(self.st_conn)
         self.st_conn.setText(tr('Starting …') if source == 'device' else tr('No chargers'))
 
         self.thread = QThread()
-        self.worker = Worker(db_path, source, a4, bt)
+        self.worker = Worker(db_path, source, a4, bt, esp, esp_auto, skyrc, skyrc_chosen)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.cycle.connect(self.on_cycle)
+        self.worker.command_result.connect(self.command_result)
+        self.worker.charger_info.connect(self.charger_info)
+        self.worker.skyrc_changed.connect(lambda mode: self.set_skyrc(mode, tell=False))
         self.worker.status.connect(self.st_conn.setText)
         self.worker.sessions_changed.connect(self.load_tables)
         self.worker.data_changed.connect(self.data_changed)
         self.thread.start()
+        self.offline_timer = QTimer(self)                  # elapsed time on the offline notices
+        self.offline_timer.timeout.connect(self._update_offline)
+        self.offline_timer.start(1000)                     # also the countdown of a Bluetooth pause
+        self.bt_holds = {}
+        self.blink_dark = False
+        self.blink_timer = QTimer(self)                    # error slots blink
+        self.blink_timer.timeout.connect(self._blink)
+        self.blink_timer.start(BLINK_MS)
 
         self.load_tables()
         self.select_slot(None)
@@ -3230,10 +4721,12 @@ class MainWindow(QMainWindow):
         tab = ChargerTab(dev, slots)
         tab.clicked.connect(self.show_charger)
         self.strip.insertWidget(self.strip.count() - 2, tab)       # before "+" and the stretch
-        page = QWidget()
-        grid = QGridLayout(page)
+        page = TilePage()
+        control = self.devs[dev]['model'] == 'MC5000'      # chargers BattBench can start / stop
+        tile_box = QWidget()
+        grid = QGridLayout(tile_box)
         grid.setContentsMargins(4, 6, 4, 0)
-        n = self.per_row(slots)
+        n = slots if control else self.per_row(slots)
         for c in range(n):
             grid.setColumnStretch(c, 1)                            # all tiles of a charger equally wide
         tiles = []
@@ -3241,11 +4734,30 @@ class MainWindow(QMainWindow):
             t = SlotTile((dev, slot), compact=slots > 8)
             t.approx_res = self.devs[dev]['model'] == 'A4Air'
             t.clicked.connect(self._tile_clicked)
+            t.menu.connect(self._tile_menu)
+            if control:
+                t.setMinimumWidth(170)
             grid.addWidget(t, slot // n, slot % n)
             tiles.append(t)
         grid.setRowStretch(grid.rowCount(), 1)
+        panel = scroll = None
+        if control:                       # tiles scroll, the control panel takes the room on the right
+            lay = QHBoxLayout(page)
+            lay.setContentsMargins(0, 0, 0, 0)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll.setWidget(tile_box)
+            lay.addWidget(scroll, 3)
+            panel = ControlPanel(self, dev, slots)
+            lay.addWidget(panel, 2)
+        else:
+            lay = QVBoxLayout(page)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.addWidget(tile_box)
         self.stack.addWidget(page)
-        self.rows[dev] = dict(tab=tab, page=page, tiles=tiles)
+        self.rows[dev] = dict(tab=tab, page=page, tiles=tiles, panel=panel, scroll=scroll)
         if self.shown_dev is None:
             self._show(dev)
             if self.sel is None and self.hist_id is None and tiles:
@@ -3282,17 +4794,25 @@ class MainWindow(QMainWindow):
         self._fit_tiles()
 
     def _fit_tiles(self):
-        """Two rows of tiles (N24) need more room than the default: grow the tile area, never shrink it."""
+        """The tile area gets just the room the shown charger's tiles (and control panel) need, the chart the rest."""
         if self.shown_dev not in self.rows:
             return
-        page = self.rows[self.shown_dev]['page']
+        row = self.rows[self.shown_dev]
+        page, scroll = row['page'], row['scroll']
+        if scroll is not None:            # never lower than a tile, plus the scroll bar when the tiles scroll
+            bar = scroll.horizontalScrollBar()
+            h = scroll.widget().sizeHint().height() + (bar.sizeHint().height() if bar.maximum() > 0 else 0)
+            if scroll.minimumHeight() != h:
+                scroll.setMinimumHeight(h)
         sizes = self.vsplit.sizes()
-        need = self.top.sizeHint().height() - self.stack.sizeHint().height() + page.sizeHint().height()
-        if sizes[0] < need and sizes[1] > need - sizes[0]:
+        page_h = max(page.sizeHint().height(), page.minimumSizeHint().height())
+        need = self.top.sizeHint().height() - self.stack.sizeHint().height() + page_h
+        if sizes[0] != need and sizes[1] > need - sizes[0]:
             self.vsplit.setSizes([need, sizes[1] - (need - sizes[0]), *sizes[2:]])
 
     def show_charger(self, dev):
         """Click on a charger tab: its tiles, and the slot last selected there (else the first running one)."""
+        self.auto_pick = False
         self._show(dev)
         slot = self.last_slot.get(dev)
         if slot is None:
@@ -3308,26 +4828,84 @@ class MainWindow(QMainWindow):
             if row['tab'].via.property('vias') != vias:
                 row['tab'].via.setProperty('vias', vias)
                 row['tab'].via.setPixmap(via_pixmap(vias, self.palette().text().color().name()) if vias else QPixmap())
-                row['tab'].via.setToolTip(' + '.join(VIA_NAME[v] for v in vias))
-            if on:
+            row['tab'].via.setToolTip(via_text(on) if on else '')
+            if on and on.get('stale'):
+                row['tab'].info.setText(tr('no answer'))
+            elif on:
                 row['tab'].info.setText(f"{on['in_mv'] / 1000:.2f} V" if on.get('in_mv') else '')
-                row['tab'].setToolTip(tr('{} · via {}').format(on['version'], ' + '.join(VIA_NAME[v] for v in vias)))
             else:
                 row['tab'].info.setText(tr('disconnected'))
-                row['tab'].setToolTip('')
+            row['tab'].info.setStyleSheet(f'color: {COLORS["error"]}; font-weight: bold;' if not on or on.get('stale')
+                                          else 'color: palette(placeholder-text);')
+            row['tab'].setToolTip(tr('{} · via {}').format(on['version'], via_text(on)) if on else '')
             for slot in range(len(row['tab'].lamps)):
                 smp = self.live.get((dev, slot))
                 if smp is None:
                     row['tab'].set_lamp(slot, COLORS['empty'], tr('Slot {}: no data').format(slot + 1))
                 else:
-                    row['tab'].set_lamp(slot, mode_color(smp['mode'], smp['ma']),
-                                        tr('Slot {}: {}').format(slot + 1, mode_name(smp)))
+                    row['tab'].set_lamp(slot, sample_color(smp), tr('Slot {}: {}').format(slot + 1, mode_name(smp)),
+                                        smp['mode'] in (2, 20))
+
+    def _blink(self):
+        self.blink_dark = not self.blink_dark
+        for row in self.rows.values():
+            row['tab'].blink(self.blink_dark)
+            for t in row['tiles']:
+                t.blink(self.blink_dark)
+
+    def _update_offline(self):
+        """Offline notice on the tiles of chargers connected in this run that are gone or no longer answer; it goes
+        away by itself when readings come in again. Called on every cycle and every few seconds."""
+        now = time.time()
+        for dev, row in self.rows.items():
+            on = self.online.get(dev)
+            until = self.bt_holds.get(dev)
+            if until is not None:                           # paused / switched off for the SkyRC app
+                if until == float('inf'):
+                    title, text, button = tr('Bluetooth deactivated'), '', tr('Switch on')
+                else:
+                    secs = max(0, int(until - now))
+                    title, text = tr('Bluetooth paused'), tr('Connects again in {}.').format(
+                        f'{secs // 60}:{secs % 60:02d} min') + '\n'
+                    button = tr('Resume now')
+                text += tr('The charger is free for the SkyRC app; nothing is recorded.')
+                row['page'].set_offline(text, title, COLORS['idle'], (button, lambda dev=dev: self.bt_resume(dev)))
+                continue
+            if on and not on.get('stale'):
+                row['page'].set_offline(None)
+                continue
+            if on:
+                since = on['stale']
+                text = tr('No answer since {} ({}).').format(hms(since), fmt_dur(now - since)) + '\n' + \
+                    tr('The charger may still be charging, but nothing is recorded. BattBench keeps trying to '
+                       'reach it.')
+                if on.get('via') == 'usb':
+                    text += ' ' + tr('If this does not end, unplug the USB cable and plug it in again.')
+            else:
+                since = max((v['t'] for k, v in self.live.items() if k[0] == dev), default=None)
+                text = (tr('Disconnected since {} ({}).').format(hms(since), fmt_dur(now - since)) if since else
+                        tr('Disconnected.')) + '\n' + \
+                    tr('Running tasks go on in the charger but are not recorded. BattBench reconnects as soon as '
+                       'it is back.')
+            row['page'].set_offline(text)
+
+    def _update_esp(self):
+        """Status bar: the BattBench-ESP bridges BattBench talks to (address, tooltip: state)."""
+        nets = sorted(self.worker.nets.items())
+        text = 'BattBench-ESP ' + ', '.join(host for host, _n in nets) if nets else ''
+        if text != self.st_esp.text():
+            self.st_esp.setText(text)
+        self.st_esp.setToolTip('<br>'.join(f'{host}: {n.state}' for host, n in nets))
+        self.st_esp_icon.setToolTip(self.st_esp.toolTip())
+        for w in (self.st_esp_icon, self.st_esp):
+            w.setVisible(bool(nets))
 
     # ---------------------------------------------------------------- worker events
     def on_cycle(self, d):
         for dev in d.get('merged', ()):
             self._remove_row(dev)
         self.online = d['devices']
+        self.bt_holds = d.get('bt_holds', {})
         self.live.update(d['live'])
         self.cur = d['sessions']
         if set(self.online) - set(self.devs):
@@ -3336,23 +4914,51 @@ class MainWindow(QMainWindow):
         for dev in sorted(shown):
             self._ensure_row(dev)
         self.dtab.set_online(self.online)
+        self._update_esp()
         self._update_heads()
+        self._update_offline()
         for dev, row in self.rows.items():
             approx = self.devs.get(dev, {}).get('model') == 'A4Air' and self.online.get(dev, {}).get('via') != 'ble'
+            status_bar = self.devs.get(dev, {}).get('model') in ('MC5000', 'MC3000')
             for slot, t in enumerate(row['tiles']):
                 t.approx_res = approx                  # A4 Air over USB: estimated; over Bluetooth: measured
+                t.status_bar = status_bar              # no progress %: state and voltage in the bar
                 smp = self.live.get((dev, slot))
                 t.update_sample(smp)
                 s = self.cur.get((dev, slot)) if smp and smp['mode'] else None     # battery in the slot
                 h = health_of(s) if s and s['grade'] in USES else None
                 t.set_battery(self.db.battery_of(s['id']) if s and s['id'] else None,
                               grade_cell(s['grade'], h['ohi'])[0] if h else '')
+        self._update_panels()
         self._fit_tiles()
+        self._pick_start_slot()
         if self.hist_id is None:
             s = self.cur.get(self.sel)
             self.result.show_session(s, self.db.battery_of(s['id']) if s and s['id'] else None)
             if time.time() - self.last_plot > 5:     # curves are re-read from the DB, so not every second
                 self.refresh_plot(keep_view=True)
+
+    PICK_SECS = 20                     # s after the start in which the first readings may choose the slot
+
+    def _pick_start_slot(self):
+        """Right after the start: select the first slot that is charging, else the first one that is done (chargers
+        in tab order). Only once, and not after the user chose something."""
+        if not self.auto_pick:
+            return
+        if time.time() - self.t_start > self.PICK_SECS or self.hist_id is not None:
+            self.auto_pick = False
+            return
+        keys = [(dev, slot) for dev, row in self.rows.items() for slot in range(len(row['tiles']))]
+        fresh = {k: v for k, v in ((k, self.live.get(k)) for k in keys) if v and v['t'] >= self.t_start - 60}
+        charging = [k for k, v in fresh.items() if v['mode'] in TASKS and v['ma'] >= PHASE_MIN_MA]
+        done = [k for k, v in fresh.items() if v['mode'] in DONE_MODES]
+        key = (charging or done or [None])[0]
+        if key is None:
+            return
+        self.auto_pick = False
+        self._show(key[0])
+        self.ctrl_sel[key[0]] = {key[1]}
+        self.select_slot(key)
 
     def busy_batteries(self):
         """Ids of the batteries assigned to the sessions of occupied slots (they are in a charger right now). Only for
@@ -3369,9 +4975,314 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- selection
     def _mark(self, key):
-        for row in self.rows.values():
-            for t in row['tiles']:
+        if key:
+            self.ctrl_sel.setdefault(key[0], {key[1]})
+        for dev, row in self.rows.items():
+            for t in row['tiles']:          # blue frame: the slot of the chart; indigo title: chosen for control
                 t.set_selected(t.key == key)
+                t.set_chosen(row['panel'] is not None and t.key[1] in self.ctrl_sel.get(dev, ()))
+        self._update_panels()
+
+    def _update_panels(self):
+        for dev, row in self.rows.items():
+            if row['panel'] is not None:
+                row['panel'].refresh(sorted(self.ctrl_sel.get(dev, ())))
+
+    SUMMARY_SECS = 120                 # s: ask a chosen slot for its summary again after this long
+
+    def _summary_key(self, dev, slot):
+        """What the 5F answer depends on: battery type, task and status in the newest reading."""
+        smp = self.live.get((dev, slot))
+        raw = bytes.fromhex(smp['raw']) if smp and smp.get('raw') else b''
+        return (mc5000.from_status(raw), raw[18] if len(raw) > 18 else None)
+
+    def slot_summary(self, dev, slot):
+        """The charger's summary of a slot (dict status, mode, charge_ma, discharge_ma) if it is still current."""
+        e = self.summaries.get((dev, slot))
+        return e['data'] if e and e['key'] == self._summary_key(dev, slot) else None
+
+    def want_summary(self, dev, slot):
+        """Ask the MC5000 for the summary of a chosen slot unless a current one is known or a query runs."""
+        e = self.summaries.get((dev, slot))
+        if (dev, slot) in self.asking or (e and e['key'] == self._summary_key(dev, slot) and
+                                          time.time() - e['t'] < self.SUMMARY_SECS):
+            return
+        self.asking.add((dev, slot))
+        self.worker.cmds.put(('mc5000_ask', dev, 'summary', slot))
+
+    def charger_info(self, d):
+        if d['kind'] == 'summary':
+            key = (d['dev'], d['slot'])
+            self.asking.discard(key)
+            # no answer: data None, asked again after SUMMARY_SECS
+            self.summaries[key] = dict(t=time.time(), key=self._summary_key(*key), data=d['data'])
+            self._update_panels()
+            return
+        dlg = self.settings_dlg
+        if d['kind'] == 'bt':
+            if dlg is not None and dlg.dev == d['dev']:
+                dlg.bt_answer(d)
+            return
+        if dlg is not None and dlg.dev == d['dev']:
+            dlg.answer(d)
+        elif d.get('error'):
+            QMessageBox.warning(self, tr('Charger settings'), d['error'])
+        if d.get('text'):
+            self.statusBar().showMessage(d['text'], 10000)
+
+    def export_shown(self):
+        """Report of the session in the result panel (finished or running)."""
+        d = self.result.cur
+        if d:
+            self._export(dict(d), self.db.battery_of(d['id']) if d.get('id') is not None else None)
+
+    def export_session(self, sid):
+        d = self.db.session_dict(sid)
+        if not d:
+            return
+        live = self.cur.get((d['dev'], d['slot']))
+        if live and live['id'] == sid:              # still running: its live state
+            d = dict(live)
+        else:
+            d['nominal'] = d['nominal'] or NOMINAL.get(d['size'], 0)
+            d['phases'] = self.db.phases(sid)
+        self._export(d, self.db.battery_of(sid))
+
+    def _export(self, d, battery_id):
+        """Ask language / phases / PDF and the file, then write the report (see report.py)."""
+        dlg = ReportDialog(self, len(d.get('phases') or []) > 1)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        settings = QSettings('battbench', 'battbench')
+        b = self.db.battery(battery_id, deleted=True) if battery_id is not None else None
+        name = (f"{b['id']}_{b['name']}" if b else f"{self.dev_name(d.get('dev'))}_{d['slot'] + 1}")
+        name = re.sub(r'[^\w.-]+', '_', f"BattBench_{name}_{datetime.fromtimestamp(d['start']):%Y-%m-%d_%H%M}")
+        folder = settings.value('report_dir', '') or QStandardPaths.writableLocation(
+            QStandardPaths.DocumentsLocation)
+        pdf = dlg.format.currentData() == 'pdf'
+        ext = '.pdf' if pdf else '.html'
+        path, _f = QFileDialog.getSaveFileName(self, tr('Export report'), os.path.join(folder, name + ext),
+                                               tr('PDF (*.pdf)') if pdf else tr('HTML page (*.html)'))
+        if not path:
+            return
+        if not path.lower().endswith(('.pdf',) if pdf else ('.html', '.htm')):
+            path += ext
+        settings.setValue('report_dir', os.path.dirname(path))
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            rep = report.build(self.db, d, battery_id, self.dev_name, dlg.lang(), dlg.phases.isChecked(),
+                               self._esp_of(d.get('dev')))
+            (report.write_pdf if pdf else report.write_html)(path, rep)
+        except OSError as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, tr('Export report'), tr('Could not write the report: {}').format(e))
+            return
+        QApplication.restoreOverrideCursor()
+        log.info('report written: %s', path)
+        if QMessageBox.question(self, tr('Export report'), tr('Report saved: {}\n\nOpen it now?').format(
+                os.path.basename(path))) == QMessageBox.Yes:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _esp_of(self, dev):
+        """For the report: firmware and address of the BattBench-ESP the charger is read through ('' = not known
+        right now), None = not through one."""
+        d = self.devs.get(dev) or {}
+        on = self.online.get(dev) or {}
+        if 'net' not in on.get('vias', ()) and 'BattBench-ESP' not in (d.get('version') or ''):
+            return None
+        addr = self.worker._bt_addr(d) if d else None
+        for host, n in sorted(self.worker.nets.items()):
+            info = n.info or {}
+            if addr and any(c.get('addr', '').upper() == addr for c in info.get('chargers', [])):
+                return ' · '.join(x for x in (info.get('fw', ''), host) if x)
+        return ''
+
+    def bt_resume(self, dev):
+        """Button on the notice of a paused / switched off Bluetooth."""
+        self.worker.cmds.put(('bt', dev, 'on'))
+        self.statusBar().showMessage(tr('Switching Bluetooth on again …'), 5000)
+
+    def set_skyrc(self, mode, tell=True):
+        """How SkyRC chargers are connected (SKYRC_MODES); tell=False: the worker switched by itself."""
+        self.skyrc = mode
+        QSettings('battbench', 'battbench').setValue('skyrc', mode)
+        if tell:
+            self.worker.cmds.put(('skyrc', mode))
+        else:
+            self.statusBar().showMessage(tr('BattBench-ESP connected: SkyRC chargers are only connected through it '
+                                            'from now on (see "+").'), 15000)
+
+    def charger_settings(self, dev):
+        """Read the MC5000 system settings, let the user change them, write them back."""
+        dlg = self.settings_dlg = ChargerSettingsDialog(self, dev)
+        self.worker.cmds.put(('mc5000_ask', dev, 'settings', None))
+        try:
+            if dlg.exec() == QDialog.Accepted and dlg.changed():
+                self.worker.cmds.put(('mc5000_ask', dev, 'settings', dlg.values()))
+                self.statusBar().showMessage(tr('Sending to the charger …'), 5000)
+        finally:
+            self.settings_dlg = None
+
+    def slot_program(self, dev, slot):
+        """What BattBench knows about the program of a slot: dict(prog, pid, t) of the last start from here, or
+        None."""
+        raw = self.db.setting(f'mc5000:{dev}:{slot}')
+        try:
+            return json.loads(raw) if raw else None
+        except ValueError:
+            return None
+
+    def start_slots(self, dev, slots, pid):
+        """Start profile pid on these slots after asking; pid 'current': each slot with its current settings."""
+        if pid == 'current':
+            return self._start_current(dev, slots)
+        prof = next(((n, d) for i, n, d in self.db.profiles() if i == pid), None)
+        if prof is None or not slots:
+            return
+        p = mc5000.Program.from_dict(prof[1])
+        if p.problems():
+            QMessageBox.warning(self, tr('Profiles'), '; '.join(tr_data(x) for x in p.problems()))
+            return
+        busy = [s + 1 for s in slots if self.live.get((dev, s), {}).get('mode') in TASKS]
+        text = tr('Start profile "{}" on slot {}?').format(prof[0], ', '.join(str(s + 1) for s in slots)) + \
+            '\n\n' + profile_text(p)
+        if busy:
+            text += '\n\n' + tr('Slot {} is working: its task is replaced and starts again from zero.').format(
+                ', '.join(map(str, busy)))
+        if QMessageBox.question(self, tr('Start'), text) != QMessageBox.Yes:
+            return
+        self.db.set_setting('last_profile', pid)
+        self.worker.cmds.put(('mc5000', dev, list(slots), p.to_dict(), pid))
+        self.statusBar().showMessage(tr('Sending to the charger …'), 5000)
+
+    def _start_current(self, dev, slots):
+        progs = {s: self.current_program(dev, s) for s in slots}
+        missing = [s + 1 for s, (p, _c) in progs.items() if p is None]
+        if missing or not slots:
+            QMessageBox.information(self, tr('Start'), tr('No data from slot {} yet.').format(
+                ', '.join(map(str, missing))))
+            return
+        bad = ['; '.join(tr_data(x) for x in p.problems()) for p, _c in progs.values() if p.problems()]
+        if bad:
+            QMessageBox.warning(self, tr('Profiles'), bad[0])
+            return
+        text = tr('Start slot {} again with its current settings?').format(', '.join(str(s + 1) for s in slots))
+        for s, (p, complete) in progs.items():
+            text += '\n\n' + tr('Slot {}').format(s + 1) + ': ' + profile_text(p)
+            if not complete:
+                text += '\n' + self._partly_known()
+        busy = [s + 1 for s in slots if self.live.get((dev, s), {}).get('mode') in TASKS]
+        if busy:
+            text += '\n\n' + tr('Slot {} is working: its task is replaced and starts again from zero.').format(
+                ', '.join(map(str, busy)))
+        if QMessageBox.question(self, tr('Start'), text) != QMessageBox.Yes:
+            return
+        for s, (p, _c) in progs.items():
+            self.worker.cmds.put(('mc5000', dev, [s], p.to_dict(), None))
+        self.statusBar().showMessage(tr('Sending to the charger …'), 5000)
+
+    def stop_slots(self, dev, slots):
+        names = ', '.join(str(s + 1) for s in slots)
+        if slots and QMessageBox.question(self, tr('Stop'), tr('Stop slot {}? The task there ends.').format(names)) \
+                == QMessageBox.Yes:
+            self.worker.cmds.put(('mc5000', dev, list(slots), None))
+            self.statusBar().showMessage(tr('Sending to the charger …'), 5000)
+
+    def known_program(self, dev, slot):
+        """The program BattBench started on a slot (mc5000.Program) while the charger still shows it, else None."""
+        info = self.slot_program(dev, slot)
+        p = mc5000.Program.from_dict(info['prog']) if info else None
+        smp = self.live.get((dev, slot))
+        st = mc5000.from_status(bytes.fromhex(smp['raw'])) if smp and smp.get('raw') else None
+        summ = self.slot_summary(dev, slot)
+        if p and st and (p.chem, p.mode) != st or p and summ and not mc5000.same_currents(p, summ):
+            return None                               # changed on the charger since
+        return p
+
+    def current_program(self, dev, slot):
+        """(program, complete) of the current settings of a slot: changed ones kept for the next start, the one
+        BattBench started, or battery type, task and currents from the charger with defaults for the rest
+        (complete False). (None, False) without data."""
+        if (dev, slot) in self.temp_progs:
+            return self.temp_progs[(dev, slot)], True
+        p = self.known_program(dev, slot)
+        if p:
+            return p, True
+        smp = self.live.get((dev, slot))
+        st = mc5000.from_status(bytes.fromhex(smp['raw'])) if smp and smp.get('raw') else None
+        if st is None or st[1] is None:
+            return None, False
+        p = mc5000.defaults(*st)
+        summ = self.slot_summary(dev, slot)
+        if summ:
+            p.charge_ma, p.discharge_ma = summ['charge_ma'] or p.charge_ma, summ['discharge_ma'] or p.discharge_ma
+        p.name = ''
+        return p, False
+
+    def _partly_known(self):
+        return tr('Only battery type, task and the currents come from the charger; the other values are defaults – '
+                  'please check them.')
+
+    def new_profile(self, dev):
+        """New profile with the SkyRC app's defaults, as New in the tab Profiles."""
+        dlg = ProfileDialog(self, 'new', mc5000.defaults('NiMH'), '')
+        if dlg.exec() == QDialog.Accepted:
+            self._store_profile(dev, None, dlg.program())
+
+    def new_profile_from_slot(self, dev, slots):
+        """New profile with the current settings of the (first) chosen slot as template."""
+        p, complete = self.current_program(dev, slots[0]) if slots else (None, True)
+        if p is None:
+            p, complete = mc5000.defaults('NiMH'), True
+        dlg = ProfileDialog(self, 'new', p, '', '' if complete else self._partly_known())
+        if dlg.exec() == QDialog.Accepted:
+            self._store_profile(dev, None, dlg.program())
+
+    def edit_profile(self, dev, slots, sel):
+        """Edit the profile chosen in the control panel; 'current': the current settings of the chosen slots, used
+        at their next start (or saved as a new profile)."""
+        if sel == 'current':
+            if not slots:
+                return
+            p, complete = self.current_program(dev, slots[0])
+            if p is None:
+                QMessageBox.information(self, tr('Current settings'), tr('No data from this slot yet.'))
+                return
+            note = tr('Changes are used at the next start of slot {} and not saved as a profile.').format(
+                ', '.join(str(s + 1) for s in slots))
+            if not complete:
+                note += ' ' + self._partly_known()
+            dlg = ProfileDialog(self, 'current', p, '', note)
+            if dlg.exec() != QDialog.Accepted:
+                return
+            if dlg.action() == 'use':
+                q = dlg.program()
+                q.name = ''
+                for s in slots:
+                    self.temp_progs[(dev, s)] = q
+                self._update_panels()
+            else:
+                self._store_profile(dev, None, dlg.program())
+            return
+        row = next(((n, d) for i, n, d in self.db.profiles() if i == sel), None)
+        if row is None:
+            return
+        dlg = ProfileDialog(self, 'edit', mc5000.Program.from_dict(row[1]), row[0])
+        if dlg.exec() == QDialog.Accepted:
+            self._store_profile(dev, sel if dlg.action() == 'save' else None, dlg.program())
+
+    def _store_profile(self, dev, pid, p):
+        """Save (pid None: as a new profile) and choose it in the control panel."""
+        if pid is None and any(n == p.name for _i, n, _d in self.db.profiles()):
+            if QMessageBox.question(self, tr('Profiles'), tr('A profile "{}" exists already. Save another one with '
+                                                             'the same name?').format(p.name)) != QMessageBox.Yes:
+                return
+        pid = self.db.save_profile(pid, p.name, p.to_dict())
+        self.ptab.load(pid)
+        panel = (self.rows.get(dev) or {}).get('panel')
+        if panel is not None:
+            panel.select_profile(pid)
+        self._update_panels()
 
     def select_slot(self, key):
         self.sel = key
@@ -3428,7 +5339,70 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentWidget(self.btab)
         self.btab.filter_model(mid)
 
+    def _tile_menu(self, key, pos):
+        """Right click on a slot: MC5000 programs (start a profile, stop)."""
+        dev, slot = key
+        if (self.devs.get(dev) or {}).get('model') != 'MC5000':
+            return
+        on = self.online.get(dev) or {}
+        ready = bool(set(on.get('vias', ())) & {'ble', 'net'}) and not on.get('stale')
+        m = QMenu(self)
+        a_start = m.addAction(tr('Start a profile …'))
+        a_stop = m.addAction(tr('Stop slot {}').format(slot + 1))
+        for a in (a_start, a_stop):
+            a.setEnabled(ready)
+        if not ready:
+            m.addSeparator()
+            m.addAction(tr('Charger not connected over Bluetooth / BattBench-ESP')).setEnabled(False)
+        a = m.exec(pos)
+        if a is a_start:
+            self.start_profile_dialog(dev, slot)
+        elif a is a_stop:
+            self.stop_slots(dev, [slot])
+
+    def start_profile_dialog(self, dev, slot):
+        profiles = self.db.profiles()
+        if not profiles:
+            QMessageBox.information(self, tr('Profiles'), tr('No profile yet: create one in the tab Profiles.'))
+            self.tabs.setCurrentWidget(self.ptab)
+            return
+        slots = self.devs[dev]['slots'] or 4
+        states = [mode_name(self.live[(dev, s)]) if self.live.get((dev, s)) else tr('no data') for s in range(slots)]
+        running = [bool(self.live.get((dev, s), {}).get('mode') in TASKS) for s in range(slots)]
+        dlg = StartDialog(self, profiles, slot, states, running, self.db.setting('last_profile'))
+        if dlg.exec() != QDialog.Accepted:
+            return
+        pid, prog, chosen = dlg.result_values()
+        self.db.set_setting('last_profile', pid)
+        self.worker.cmds.put(('mc5000', dev, chosen, prog.to_dict(), pid))
+        self.statusBar().showMessage(tr('Sending to the charger …'), 5000)
+
+    def command_result(self, ok, text, started):
+        self.statusBar().showMessage(text, 15000)
+        for k in [k for k in self.summaries if started and k[0] == started['dev']]:
+            self.summaries.pop(k)
+        for sl in (started or {}).get('slots', ()):
+            self.temp_progs.pop((started['dev'], sl), None)
+        if started:                                  # remember the program of these slots
+            for s in started['slots']:
+                self.db.set_setting(f"mc5000:{started['dev']}:{s}",
+                                    json.dumps(dict(prog=started['prog'], pid=started['pid'], t=time.time())))
+            self._update_panels()
+        if not ok:
+            QMessageBox.warning(self, tr('Charger'), text)
+
     def _tile_clicked(self, key):
+        self.auto_pick = False
+        dev, slot = key
+        chosen = self.ctrl_sel.setdefault(dev, set())
+        if QApplication.keyboardModifiers() & Qt.ControlModifier and chosen:
+            chosen ^= {slot}                         # Ctrl: more slots for the control panel
+            if not chosen:
+                chosen.add(slot)
+            self._mark(self.sel)
+            self._update_panels()
+            return
+        self.ctrl_sel[dev] = {slot}
         self.row_sid = None
         self.select_slot(key)
         s = self.cur.get(key) if self.live.get(key, {}).get('mode') else None
@@ -3438,6 +5412,7 @@ class MainWindow(QMainWindow):
             self.btab.show_battery(bid)
 
     def open_session(self, sid):
+        self.auto_pick = False
         d = self.db.session_dict(sid)
         if not d:
             return
@@ -3572,6 +5547,7 @@ class MainWindow(QMainWindow):
                 continue
             if len(sizes) == split.count() and all(x >= 0 for x in sizes) and sum(sizes) > 0:
                 split.setSizes(sizes)
+        self._fit_tiles()
         for key, t in self.width_tables().items():
             try:
                 widths = [int(x) for x in (self.db.setting('cols_' + key) or '').split(',')]
@@ -3620,7 +5596,10 @@ def main():
     ap.add_argument('--no-bt', action='store_true', help='no Bluetooth (A4 Air only over USB)')
     ap.add_argument('--lang', choices=['auto', *LANGUAGES], help='user interface language '
                                                                 '(default: last choice in the app, else auto)')
+    ap.add_argument('--debug', action='store_true', help='detailed log (every unanswered query), also to stderr')
+    ap.add_argument('--console', action='store_true', help='run.bat: keep the console window (no effect here)')
     a = ap.parse_args()
+    logs.setup(a.db, a.debug)
     source = 'offline' if a.offline else 'device'
     pg.setConfigOptions(antialias=True)
     if sys.platform == 'win32':
@@ -3638,9 +5617,15 @@ def main():
     install(app, pick_language(a.lang or settings.value('lang', 'auto')))
     # settings were stored under 'isdtgui' before the rename
     a4 = 'usb' if a.no_bt else a.a4 or settings.value('a4', QSettings('isdtgui', 'isdtgui').value('a4', 'both'))
-    w = MainWindow(a.db, source, a4=a4 if a4 in A4_MODES else 'both', bt=not a.no_bt)
+    esp = [h for h in (settings.value('esp_hosts', '') or '').split() if h]
+    skyrc = settings.value('skyrc', 'auto')
+    w = MainWindow(a.db, source, a4=a4 if a4 in A4_MODES else 'both', bt=not a.no_bt, esp=esp,
+                   esp_auto=settings.value('esp_auto', True, type=bool),
+                   skyrc=skyrc if skyrc in SKYRC_MODES else 'auto', skyrc_chosen=settings.contains('skyrc'))
     w.show()
-    sys.exit(app.exec())
+    code = app.exec()
+    log.info('BattBench closed')
+    sys.exit(code)
 
 
 if __name__ == '__main__':

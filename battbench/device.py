@@ -5,6 +5,7 @@ All ISDT chargers use the same USB id (28e9:028a); the model is told apart by th
 Supported: N8 / N16 / N24 (NXHOSTP, NXHOST), C4, C4 EVO, A4, UC4 and A4Air (USB). Tested on real hardware:
 N8 and A4 Air; the others are expected to answer the same way (see ChargerDetails.md)."""
 import hashlib
+import logging
 import statistics
 import struct
 import time
@@ -19,6 +20,7 @@ from isdttool.charger.representation import parse_packet
 from .i18n import tr
 
 VID, PID = 0x28E9, 0x028A
+log = logging.getLogger('battbench.usb')
 
 
 @dataclass
@@ -65,6 +67,34 @@ def usb_devices() -> List[UsbInfo]:
             for d in hid.enumerate(VID, PID)]
 
 
+def present(path: bytes) -> bool:
+    """Is the HID device still plugged in (enumerated by the system)?"""
+    return any(d['path'] == path for d in hid.enumerate(VID, PID))
+
+
+class CheckedHid:
+    """Wraps the hidapi device: hidapi reports a failed write (e.g. the charger no longer takes requests) only as
+    return value -1, which isdttool ignores; raise instead."""
+
+    def __init__(self, h):
+        self.h = h
+
+    def write(self, buf):
+        n = self.h.write(buf)
+        if n < 0:
+            raise OSError('HID write failed')
+        return n
+
+    def __getattr__(self, name):
+        return getattr(self.h, name)
+
+
+def open_hid(path: bytes):
+    dev = get_device('ignore', 'app', path=path.decode())
+    dev.__device__ = CheckedHid(dev.__device__)
+    return dev
+
+
 class Charger:
     """One connected charger. key = stable identity (same device -> same key across restarts)."""
     model = ''            # model id from 0xE0
@@ -74,6 +104,7 @@ class Charger:
     def __init__(self, usb: UsbInfo, dev, e1: bytes):
         self.usb = usb
         self.dev = dev                                 # isdttool Charger
+        self.why = ''                                  # why the last read_slot returned None (for the log)
         self.version = f'{self.label} FW {".".join(str(b) for b in e1[17:21])}'
         self.key = self.make_key(e1)
 
@@ -88,6 +119,11 @@ class Charger:
             self.dev.__device__.close()
         except Exception:
             pass
+
+    def reopen(self):
+        """Close and open the HID handle again (charger stopped answering, USB link still there)."""
+        self.close()
+        self.dev = open_hid(self.usb.path)
 
     def read_slot(self, slot: int) -> Optional[Sample]:
         raise NotImplementedError
@@ -108,10 +144,17 @@ class Metrics(Charger):
         self.dev.metrics(slot)
         # a late answer to an earlier request (e.g. after a read timeout) may still be queued: it would end up
         # under this slot (seen: a whole poll cycle shifted by one slot). Skip answers for other slots.
+        other = []
         for _ in range(3):
             p = self.dev.read_packet()
             if not p or (len(p) >= 2 and p[0] == 0xDF and p[1] == slot):
+                if not p:
+                    self.why = 'no answer' + (' (skipped: ' + ' '.join(x[:4].hex() for x in other) + ')'
+                                              if other else '')
                 return p
+            other.append(bytes(p))
+            log.debug('%s slot %d: skipped answer %s', self.label, slot + 1, bytes(p).hex())
+        self.why = 'only answers for other slots'
         return None
 
     def read_slot(self, slot: int) -> Optional[Sample]:
@@ -120,6 +163,7 @@ class Metrics(Charger):
             return None
         r = parse_packet(p, self.tables or self.model)
         if not r.get('_channel exists') or r.get('_malformed'):
+            self.why = ('malformed ' if r.get('_malformed') else 'no channel ') + bytes(p).hex()
             return None
         return Sample(t=time.time(), slot=slot, mode=r['mode id'], mode_str=r['mode string'],
                       chem=r['chemistry string'], size=r['dimensions string'],
@@ -282,6 +326,7 @@ class A4Air(Charger):
         self.dev.write_to_charger(bytearray([0xE4, ch]))
         p = self.dev.read_packet()
         if not p or len(p) < 11 or p[0] != 0xE5 or p[1] != ch:
+            self.why = 'unexpected answer ' + bytes(p).hex() if p else 'no answer'
             return None
         return p, struct.unpack_from('<BBHHhhB', bytes(p))[2:]
 
@@ -340,7 +385,7 @@ DRIVERS = {d.model: d for d in (N8, NOld, C4, C4Evo, A4, UC4, A4Air)}
 
 def open_charger(usb: UsbInfo) -> Charger:
     """Opens the HID device and identifies it. Raises ValueError for unknown models."""
-    dev = get_device('ignore', 'app', path=usb.path.decode())
+    dev = open_hid(usb.path)
     try:
         dev.version()
         e1 = bytes(dev.read_packet() or b'')

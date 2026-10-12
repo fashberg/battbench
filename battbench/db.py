@@ -4,6 +4,7 @@ import datetime
 import glob
 import gzip
 import itertools
+import json
 import os
 import shutil
 import sqlite3
@@ -12,8 +13,8 @@ import time
 from typing import List
 
 from .device import N8_MODES, Sample
-from .model import (ABORTED, DISCHARGE, FINISHED, GAP_SECS, GRADES, MIN_SECS, PHASE_MIN_MA, RUNNING, Phase, Session,
-                    Tracker, discharge_curve)
+from .model import (ABORTED, CONTACT_LOST, DISCHARGE, FINISHED, GAP_SECS, GRADES, MIN_SECS, PHASE_MIN_MA, REMOVED,
+                    RUNNING, Phase, Session, Tracker, discharge_curve)
 
 # Backups: gzip copies next to the database, on exit and every `hours` (0 = only on exit). Kept: the newest `keep`,
 # plus the newest one of each of the last `daily` days, `weekly` weeks and `monthly` months (settings in the app).
@@ -170,15 +171,16 @@ CREATE TABLE IF NOT EXISTS models (
   note TEXT DEFAULT '', UNIQUE (maker, name));
 CREATE TABLE IF NOT EXISTS imported (file TEXT PRIMARY KEY, at REAL, size INTEGER, rows INTEGER);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS profiles (id INTEGER PRIMARY KEY, name TEXT, data TEXT);
 """
 SESSION_FIELDS = ['id', 'slot', 'start', 'end', 'task', 'chem', 'size', 'status', 'nominal', 'label',
                   'discharge_mah', 'charge_mah', 'res_min', 'temp_max', 'grade', 'note', 'battery_id',
                   'battery_name', 'dev', 'dev_name', 'battery_deleted', 'deleted', 'res_first', 'res_last',
-                  'v_start', 'v_mid', 'early_drop', 'res_est', 'ohi']
+                  'v_start', 'v_mid', 'early_drop', 'res_est', 'ohi', 'stop_reason']
 SESSION_SELECT = ('SELECT s.id, s.slot, s.start, s.end, s.task, s.chem, s.size, s.status, s.nominal, s.label, '
                   's.discharge_mah, s.charge_mah, s.res_min, s.temp_max, s.grade, s.note, s.battery_id, b.name, '
                   's.dev, d.name, b.deleted IS NOT NULL, s.deleted, s.res_first, s.res_last, '
-                  's.v_start, s.v_mid, s.early_drop, s.res_est, s.ohi '
+                  's.v_start, s.v_mid, s.early_drop, s.res_est, s.ohi, s.stop_reason '
                   'FROM sessions s LEFT JOIN batteries b ON b.id = s.battery_id LEFT JOIN devices d ON d.id = s.dev')
 DEVICE_FIELDS = ['id', 'key', 'model', 'name', 'slots', 'version', 'last_seen', 'alt_key']
 LEGACY_N8 = 'NXHOSTP-legacy'      # data recorded before chargers were told apart
@@ -277,6 +279,12 @@ class DB:
         if self.con.execute('PRAGMA user_version').fetchone()[0] < 12:
             self._ohi_column()
             self.con.execute('PRAGMA user_version = 12')
+        if self.con.execute('PRAGMA user_version').fetchone()[0] < 13:
+            self._stop_reason_column()
+            self.con.execute('PRAGMA user_version = 13')
+        if self.con.execute('PRAGMA user_version').fetchone()[0] < 14:
+            self._skyrc_stops()
+            self.con.execute('PRAGMA user_version = 14')
         if not self.con.execute('SELECT COUNT(*) FROM models').fetchone()[0]:
             self.con.executemany('INSERT INTO models (maker,name,type,capacity) VALUES (?,?,?,?)', DEFAULT_MODELS)
         self.con.commit()
@@ -444,6 +452,26 @@ class DB:
             n_out += len(new)
         return n_in, n_out
 
+    # ------------------------------------------------------------- charge profiles (mc5000.Program as JSON)
+    def profiles(self):
+        """[(id, name, dict)] sorted by name."""
+        return [(i, n, json.loads(d or '{}')) for i, n, d in
+                self.con.execute('SELECT id, name, data FROM profiles ORDER BY name COLLATE NOCASE, id')]
+
+    def save_profile(self, pid, name, data):
+        """pid None = new; returns the id."""
+        if pid is None:
+            pid = self.con.execute('INSERT INTO profiles (name, data) VALUES (?, ?)',
+                                   (name, json.dumps(data))).lastrowid
+        else:
+            self.con.execute('UPDATE profiles SET name=?, data=? WHERE id=?', (name, json.dumps(data), pid))
+        self.con.commit()
+        return pid
+
+    def delete_profile(self, pid):
+        self.con.execute('DELETE FROM profiles WHERE id=?', (pid,))
+        self.con.commit()
+
     def setting(self, key, default=None):
         """Value stored with the data (e.g. the window layout), as text."""
         row = self.con.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
@@ -473,18 +501,19 @@ class DB:
             v_mid = 0                                     # no curve to be had: rate_missing needn't try again
         vals = (s.slot, s.start, s.end, s.task, s.chem, s.size, s.status, s.nominal,
                 s.discharge_mah, s.charge_mah, s.res_first, s.res_min, s.res_last, s.temp_max, grade, note, s.dev,
-                s.v_start, v_mid, None if s.early_drop is None else int(s.early_drop), int(s.res_est), ohi)
+                s.v_start, v_mid, None if s.early_drop is None else int(s.early_drop), int(s.res_est), ohi,
+                s.stop_reason)
         if s.db_id is None:
             cur = self.con.execute(
                 'INSERT INTO sessions (slot,start,end,task,chem,size,status,nominal,discharge_mah,charge_mah,'
-                'res_first,res_min,res_last,temp_max,grade,note,dev,v_start,v_mid,early_drop,res_est,ohi) '
-                'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', vals)
+                'res_first,res_min,res_last,temp_max,grade,note,dev,v_start,v_mid,early_drop,res_est,ohi,'
+                'stop_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', vals)
             s.db_id = cur.lastrowid
         else:
             self.con.execute(
                 'UPDATE sessions SET slot=?,start=?,end=?,task=?,chem=?,size=?,status=?,nominal=?,discharge_mah=?,'
                 'charge_mah=?,res_first=?,res_min=?,res_last=?,temp_max=?,grade=?,note=?,dev=?,v_start=?,v_mid=?,'
-                'early_drop=?,res_est=?,ohi=? WHERE id=?', vals + (s.db_id,))
+                'early_drop=?,res_est=?,ohi=?,stop_reason=? WHERE id=?', vals + (s.db_id,))
         self.con.execute('DELETE FROM phases WHERE session_id=?', (s.db_id,))
         self.con.executemany('INSERT INTO phases VALUES (?,?,?,?,?,?,?,?)',
                              [(s.db_id, i, p.kind, p.start, p.end, p.mah, p.mv_start, p.mv_end)
@@ -563,6 +592,50 @@ class DB:
         for (sid,) in self.con.execute('SELECT id FROM sessions').fetchall():
             self.rerate(sid, commit=False)
 
+    def _stop_reason_column(self):
+        """Version 13: sessions.stop_reason = the error a charger stopped the task with (e.g. SkyRC capacity limit);
+        such sessions were stored as 'removed' before: they are found in their readings and re-rated."""
+        if 'stop_reason' not in [r[1] for r in self.con.execute('PRAGMA table_info(sessions)')]:
+            self.con.execute("ALTER TABLE sessions ADD COLUMN stop_reason TEXT DEFAULT ''")
+        for sid, dev, slot, start, end in self.con.execute(
+                'SELECT id, dev, slot, start, end FROM sessions WHERE status=?', (REMOVED,)).fetchall():
+            row = self.con.execute("SELECT mode_str FROM samples WHERE dev=? AND slot=? AND mode=20 AND mode_str "
+                                   "NOT IN ('', 'error') AND t BETWEEN ? AND ? ORDER BY t DESC LIMIT 1",
+                                   (dev, slot, start, end)).fetchone()
+            if row:
+                self.con.execute('UPDATE sessions SET status=?, stop_reason=? WHERE id=?', (ABORTED, row[0], sid))
+                self.rerate(sid, commit=False)
+
+    def _skyrc_stops(self):
+        """Version 14: MC5000 readings of a task the charger stopped (status 0 with an error, e.g. capacity limit)
+        were stored as idle; they become errors (mode 20, the error text, no current) from their raw answer. A
+        'removed' session followed by such an error becomes 'aborted' with the reason; 'contact lost' means the cell
+        was taken out, so such sessions are 'removed'."""
+        from .device_skyrc import MC5000_ERRORS
+        fixed = []
+        for dev, slot, t, raw in self.con.execute(
+                "SELECT s.dev, s.slot, s.t, s.raw FROM samples s JOIN devices d ON d.id = s.dev "
+                "WHERE d.model = 'MC5000' AND s.mode = 0 AND s.raw LIKE '0f%'").fetchall():
+            try:
+                p = bytes.fromhex(raw)
+            except ValueError:
+                continue
+            if len(p) >= 22 and p[2] == 0x91 and p[18] == 0 and p[20] in MC5000_ERRORS:
+                fixed.append((MC5000_ERRORS[p[20]], dev, slot, t))
+        self.con.executemany('UPDATE samples SET mode=20, mode_str=?, ma=0, secs=0 WHERE dev=? AND slot=? AND t=?',
+                             fixed)
+        for sid, dev, slot, end in self.con.execute(
+                'SELECT id, dev, slot, end FROM sessions WHERE status=?', (REMOVED,)).fetchall():
+            row = self.con.execute("SELECT mode_str FROM samples WHERE dev=? AND slot=? AND mode=20 AND t > ? AND "
+                                   "t <= ? ORDER BY t LIMIT 1", (dev, slot, end - 1, end + 600)).fetchone()
+            if row and row[0] not in ('', 'error', CONTACT_LOST):
+                self.con.execute('UPDATE sessions SET status=?, stop_reason=? WHERE id=?', (ABORTED, row[0], sid))
+                self.rerate(sid, commit=False)
+        for (sid,) in self.con.execute('SELECT id FROM sessions WHERE status=? AND stop_reason=?',
+                                       (ABORTED, CONTACT_LOST)).fetchall():
+            self.con.execute("UPDATE sessions SET status=?, stop_reason='' WHERE id=?", (REMOVED, sid))
+            self.rerate(sid, commit=False)
+
     def rate_missing(self):
         """At start: finished sessions with a discharge but without its voltage curve (measured before the health
         index, or the app was closed meanwhile) get it from the stored readings and are rated anew; so do sessions
@@ -605,6 +678,7 @@ class DB:
         """Recompute capacities and grade (e.g. after the nominal capacity was changed)."""
         cols = [r[1] for r in self.con.execute('PRAGMA table_info(sessions)')]
         curve = ',v_start,v_mid,early_drop,res_est' if 'v_mid' in cols else ''     # before version 11: not yet
+        curve += ',stop_reason' if 'stop_reason' in cols else ''                      # from version 13
         row = self.con.execute('SELECT slot,start,end,task,chem,size,status,nominal,res_first,res_min,'
                                'res_last,temp_max' + curve + ' FROM sessions WHERE id=?', (session_id,)).fetchone()
         s = Session(slot=row[0], start=row[1], end=row[2], task=row[3], chem=row[4], size=row[5],
@@ -612,6 +686,7 @@ class DB:
                     temp_max=row[11], db_id=session_id)
         if curve:
             s.v_start, s.v_mid, s.early_drop, s.res_est = row[12], row[13], row[14], bool(row[15])
+            s.stop_reason = (row[16] if len(row) > 16 else '') or ''
         s.phases = [Phase(kind=k, start=a, end=b, mah=m) for k, a, b, m in self.phases(session_id)]
         grade, note, ohi = s.rating()
         self.con.execute('UPDATE sessions SET grade=?, note=?, discharge_mah=?, charge_mah=? WHERE id=?',

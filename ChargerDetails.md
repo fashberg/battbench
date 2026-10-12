@@ -1,13 +1,19 @@
 # Charger details
 
-How BattBench talks to each charger and what it gets back. BattBench sends **read-only queries only** – no command
-that changes a setting, starts, stops or restarts a task.
+How BattBench talks to each charger and what it gets back. BattBench reads with **queries only** – no command
+that changes a setting, starts, stops or restarts a task. The one exception is the SkyRC MC5000: when you start a
+profile or stop a slot yourself (right click on a slot), BattBench sends the program, start and stop commands
+described below, and nothing else.
 
 ## General
 - **USB**: all ISDT chargers share the USB id `28e9:028a` (HID). BattBench looks for new devices every 3 s and asks
   each one for its device info (`0xE0` → `0xE1`); the model id in the answer selects the driver. Every charger gets
   its own reading thread, so a hanging or unplugged charger does not slow down the others; when it comes back,
   BattBench reconnects.
+- **Charger stops answering**: seen on an N8 after hours of analysis – it kept charging, stayed on the USB bus, but
+  answered no more queries. hidapi reports a failed write only as return value -1, so BattBench checks it. A charger
+  without readings for 30 s is shown as offline; its reader skips the rest of a poll cycle after two silent slots and
+  opens the HID handle again every 60 s until it answers. All of this goes to `battbench.log`.
 - **Bluetooth LE**: a scan every 15 s finds ISDT Air and SkyRC chargers by their advertised name.
 - **Identity**: an N8 is recognised by the serial number in its device info (last 6 bytes of the `0xE1` answer).
   The A4 Air has no serial number over USB; it is recognised by its USB port, over Bluetooth by its address.
@@ -71,14 +77,47 @@ that changes a setting, starts, stops or restarts a task.
 - **USB only**: no Bluetooth connection to the A4 Air; other Bluetooth chargers are still read. No Bluetooth at all:
   `--no-bt`.
 
-## SkyRC MC3000 / MC5000 (Bluetooth, untested)
+## SkyRC MC3000 / MC5000 (Bluetooth; MC5000 checked, MC3000 untested)
 - Service `FFE0`, characteristic `FFE1` (write without response + notify), sum checksum.
 - **MC5000**: `0F 03 91 <bit> cs` per slot → current, voltage, temperature, mAh, seconds, internal resistance,
   status (0 idle, 1 starting, 2 charging, 3 discharging, 4 pause, 5/6 done), operation, error, battery type.
+  A task the charger stops itself (e.g. error 4, capacity limit set on the charger reached) reports status 0 with
+  the error for a while (seen: 20 s to 3 min), mAh and time already reset to 0 and a stale current; then plain idle.
+  BattBench keeps the last mAh before it and closes the session as *aborted* with the reason.
+- **MC5000 programs** (only on an explicit start / stop by the user; packets as the SkyRC app sends them, layout from
+  the btsnoop captures documented by skyrc-mc-rs, which are the unit test vectors in `tests/test_mc5000.py`):
+  - `94 <40 bytes>` program for the slot in the bit mask: mask, mode (index in the chemistry's mode
+    list, the same number the status reports), charge / discharge current, capacity limit, charge voltage, discharge
+    cut-off, charge / discharge end current (mA), rest after charge / discharge (min), cycles, cycle order (0 C>D,
+    1 D>C, 2 C>D>C, 3 D>C>D), −ΔV (mV), trickle (×10 mA), recharge voltage, temperature limit (°C, the app always sends
+    60), time limit, maximum time (min), `00`, chemistry (0 LiIon … 9 NaIon), storage voltage (lithium-like) or
+    110 % of the capacity limit (nickel / alkaline), Eneloop type, 4 × `00`. All 16-bit values big-endian. Answer
+    `0F 04 94 <mask> 01 cs`. With a battery in the slot the charger starts the task by itself after a short check
+    and a resistance measurement; without one the program waits for a battery. A slot that is working keeps its
+    task and the answer is `01` all the same, so BattBench stops a working slot first and then checks the status
+    (battery type and task) for the new program. The temperature limit and the maximum time bytes have no visible
+    effect.
+  - `FE <mask>` stops the slot (the SkyRC app's stop button); `FE 00` stops **all** slots (never sent).
+  - With more than one bit in the mask only the lowest slot is meant, so BattBench sends one packet per slot.
+  - `93 <mask>`, a start command in older captures, has no effect on firmware 2.02 and is not sent.
+  - Error 13 (battery already full at the start) counts as done.
+  - `98 <mask>` returns the charger's stored voltage curve of the slot's task in pages (not used yet).
+  - `5F <mask>` (read only) → `0F 0C 5F mask status type ? task charge discharge 00 00 ? cs`: the slot's programmed
+    charge and discharge current for its battery type in steps of 100 mA (rounded down). BattBench asks it for the
+    slots chosen in the control panel; it is the only part of a program besides type and task the charger reports.
+  - `96 04` (read only) → `0F 09 96 ? key notify done light ? timeout cs` and `95 04 key notify done light ? timeout`
+    (answer `0F 04 95 04 01 cs`): the charger's system settings – key beep and notification sound 0 off … 3 high,
+    completion tone 0 once / 1 repeated, backlight 1 low … 3 high, an unknown byte (sent back unchanged), screen
+    timeout in minutes (0 off, 1, 3, 5, 10, 15, 30, 60, 120). BattBench writes them only from its settings dialog and
+    reads them back to check.
 - **MC3000**: `0F 55 <slot> 00 … cs` (20 bytes) → battery type, operation, status (0 idle, 1 charging,
   2 discharging, 3 pause, 4 done, from 128 error), time, voltage, current, mAh, temperature, internal resistance.
-- Only this status query is sent. **Never sent**: the handshake / init sequence of the MC5000 app (`57` / `74` / `65` /
-  `FE` – it restarts running tasks with reset counters, `FE` even stops them), start / stop (`93`), settings (`94`,
+- The MC5000 answers the status query only after the app's handshake `57` (device info); before, it repeats its
+  greeting `0F 04 06 01 01 08`. The answer is `0F 16 91 …` (24 bytes) on a current charger, one byte more than in older
+  captures (`0F 15`); the checksum is the sum from `91` to the byte before it. Sending `57` does not disturb running
+  tasks.
+- Only the handshake and the status query are sent. **Never sent**: the init sequence of the MC5000 app (`74` / `65` /
+  `FE` – it restarts running tasks with reset counters, `FE` even stops them), start / stop (`93`, `FE`), settings (`94`,
   MC3000 `11`).
 - Operation → task: charge, discharge, storage; cycle / refresh → cycle; break-in → activation. While discharging,
   current and mAh are negative as on the N8.

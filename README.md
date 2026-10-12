@@ -27,6 +27,7 @@ charger over USB and logs everything for me – and on top of that keeps a datab
 - **Live view** of every slot of every connected charger: mode, voltage, current, mAh, internal resistance,
   temperature, progress.
 - **One chart per run** with voltage, current, mAh, internal resistance and temperature, each on its own axis.
+- **Session reports** as an HTML page or a PDF: rating, battery, charger, chart and every phase.
 - **Automatic session detection**, also across restarts of the app.
 - **Rating**: a health index from capacity, internal resistance, voltage under load and charge efficiency, with a
   category (A high drain … D recycle) and what the cell is still good for.
@@ -63,6 +64,7 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28e9", ATTRS{idProduct}=="028a", TAG+="ua
 | `--lang auto\|en\|de` | user interface language (also in the app, tab *Settings*) |
 | `--a4 usb\|bt\|both` | how the A4 Air is read (also in the app, tab “+”) |
 | `--no-bt` | no Bluetooth at all |
+| `--debug` | detailed log: every unanswered query (also printed to the console) |
 
 <!-- help: everything up to the end marker is also the built-in help (tab Help); keep help_de.md in step -->
 ## User guide
@@ -207,8 +209,13 @@ MC3000 and Maha MH-C9000.
 
 ### Using the app
 - **Charger tabs** at the top: name, input voltage, connection (USB / Bluetooth symbol) and one LED per slot – grey
-  empty, orange charging, pink discharging, blue analysis / activation / cycle, green done, red error. The “+” tab
+  empty, orange ready (battery in, no task), yellow charging, red discharging, blue analysis / activation / cycle,
+  green done, blinking red error. The “+” tab
   lists the supported chargers, the Bluetooth search and how to read the A4 Air.
+- **Charger offline**: if a charger is unplugged or stops answering for 30 seconds, a red notice covers its tiles
+  and its tab says *disconnected* / *no answer*. The charger may go on charging, but nothing is recorded meanwhile.
+  BattBench keeps trying (it opens the USB connection again every minute) and the notice goes away by itself as soon
+  as readings come in again. If it stays, unplug the USB cable and plug it in again.
 - **Slot tiles**: values of the slot; the bar shows the charger's progress, its arrows run towards 100 % while
   charging and towards 0 % while discharging. Click a tile to see its session; if a battery is assigned, the
   *Batteries* tab below opens with its history.
@@ -217,12 +224,43 @@ MC3000 and Maha MH-C9000.
   it; once zoomed in, dragging in the lower two thirds scrolls through time (the upper third still draws a frame).
   Right click zooms out; the house symbol (bottom left) shows everything again. The last discharge shows its plateau
   (20–80 %) shaded darker, with the average voltage there (dashed) and the voltage after 5 % (dot).
+- **Export report …** (button above the rating, or right click on a session in the tables): rating, battery,
+  charger, main data and software versions, the chart, the details, the phase list, a chart for each charge /
+  discharge phase (can be left out) and at the end the explanations of the values and the section *Rating* of this
+  guide (*Rating details*). As an HTML page with the charts embedded or as a PDF (DIN A4, a heading never ends a page;
+  the explanations start a new page). The language is the app's or chosen in the dialog. The
+  charts carry "fashberg/battbench" top left.
 - **Tables** (bottom): click a column title to sort; the funnel in a column title filters like a spreadsheet.
   *Sessions* lists all sessions, *Batteries* your batteries with their history on the right (clicking a battery shows
   its latest session in the chart, clicking a session in the history shows that one), *Models* the model list,
   *Chargers* the known chargers (rename them here – the name is stored only in BattBench).
 - **Keys in the tables**: arrow keys move, Enter edits a battery / model (in *Sessions*: jumps to the battery
   field), Del deletes.
+- **Profiles (SkyRC MC5000)**: the tab *Profiles* keeps charge programs – battery type, task (charge, discharge,
+  cycle …), currents, capacity limit, voltages, cycles and their order, rests. Each value is chosen from the steps the
+  SkyRC app offers (e.g. currents in 50 mA steps, recharge for NiMH off or from 1.30 V); a new battery type, task or
+  Eneloop type (Std / Pro / Lite / Plus AA, AAA, C, D) fills in the app's defaults for it. *New* and *Copy* open the
+  profile in its own window. An MC5000 (connected over Bluetooth
+  or a BattBench-ESP) gets the panel *Charger control* right of its tiles: click a tile to choose its slot, Ctrl +
+  click for several; the panel shows what runs there and with which program (and which saved profile it is), starts
+  the chosen profile on the chosen slots and stops them. *Current settings* in the profile list starts each slot again
+  with its own settings. The button *Profile* holds the profile actions: *Create new from current settings …* opens a
+  new profile with the current settings of the slot as template, *New …* one with the app's defaults (as in the tab
+  *Profiles*); *Edit …* edits the chosen profile (*Clone* saves it as a new one) – with *Current settings* chosen it
+  changes them only for the next start (*Use*), or *Create new profile* saves them. The charger cannot report its
+  whole program: BattBench knows it for tasks it started itself; for others it shows battery type, task and the charge
+  / discharge current the charger reports (in steps of 0.1 A) and the profiles that fit. The same is in the right
+  click menu of a slot. The gear button in the panel's title opens the charger's own settings (key beep, notification
+  sound, completion tone, backlight, screen timeout): read from the charger, saved back to it. Below them is its
+  **Bluetooth connection**: the charger takes only one, so to use the SkyRC app *Pause 5 min* or *Switch off* frees it
+  (for BattBench's own Bluetooth and every BattBench-ESP at once; switched off stays off after a restart), *Switch on*
+  connects again; over a BattBench-ESP the dialog also opens its web page. While Bluetooth is paused or off, the tiles
+  say so (with the time left of a pause and a button to resume) instead of "Charger offline"; the gear works then,
+  too. A pause set on the ESP's web page shows here as well. Which way BattBench connects SkyRC chargers is set in the
+  "+" tab (*Connect SkyRC chargers*): *Automatic* switches to *Only through a BattBench-ESP* once one was connected,
+  then this PC's Bluetooth leaves them alone. This is the only time
+  BattBench sends anything that changes what a charger does, and only after you confirm it. A task that runs in a
+  ticked slot is replaced and starts again from zero.
 - **Deleting**: right click (or Del) on sessions, batteries or models (Ctrl / Shift selects several). Deleted entries are
   only hidden; *Settings* can show them again (grey) – deleting such an entry once more removes it for good.
 
@@ -246,6 +284,9 @@ entries. Nothing is sent anywhere.
   closed and, while it runs, every 12 hours. Kept are the last 10 backups plus the newest one of each of the last 20
   days, 8 weeks and 24 months; all of this can be changed in *Settings*. To restore one, unpack it (e.g. with 7-Zip)
   and replace `battbench.db` while BattBench is closed.
+- **Log file**: `battbench.log` next to the database (link in *Info*) records connections, chargers that stop
+  answering, reconnects and errors – useful when something went wrong. Start with `--debug` for every single
+  unanswered query.
 - **Compressing old readings** (*Settings*, on by default): readings older than two weeks are reduced to one per
   minute automatically – per minute the median of voltage, current, resistance and temperature and the last counter values;
   sessions and ratings stay as they are, only the curves of old sessions get coarser. *Compress all readings now*
@@ -261,7 +302,8 @@ checkout, BattBench also shows the commit it runs from (tab *Info*, `--help`).
 ## Development
 See [CLAUDE.md](CLAUDE.md) for the code layout and conventions, [ChargerDetails.md](ChargerDetails.md) for what is
 read from each charger.
-- Run from source: `run.bat` / `run.sh` (arguments are passed on).
+- Run from source: `run.bat` / `run.sh` (arguments are passed on). `run.bat` starts the app without a console
+  window; with `--debug` or `--console` it keeps the console for its output.
 - Translations: texts in the code are English and wrapped in `tr()`. After changing texts run
   `.venv\Scripts\python battbench\translations\update.py`, translate the new entries in
   `battbench/translations/battbench_de.ts` (e.g. with `pyside6-linguist`) and run the script again.

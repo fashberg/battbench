@@ -75,6 +75,33 @@ class BleManager(threading.Thread):
         self.last_scan = 0
         self.scan_now = threading.Event()
         self.ignore = set()           # models not to connect to (A4 Air when it is to be read over USB only)
+        self.hold = {}                # ADDRESS -> time until which it stays free (inf = off): for the SkyRC app
+        self.ok = False               # the last search worked (Bluetooth of this PC usable)
+
+    def hold_charger(self, address, minutes):
+        """Leave a charger free for other apps (it takes only one connection): minutes > 0 pause, None off,
+        0 connect again. Disconnects at once."""
+        if minutes == 0:
+            self.hold.pop(address.upper(), None)
+            self.scan_now.set()
+            return
+        self.hold_until(address, float('inf') if minutes is None else time.time() + 60 * minutes)
+
+    def hold_until(self, address, until):
+        address = address.upper()
+        self.hold[address] = until
+        for addr, r in list(self.active.items()):
+            if addr.upper() == address:
+                r.running = False
+
+    def held(self, address) -> Optional[float]:
+        """Time until which the charger stays free (inf = off), None = BattBench may connect."""
+        until = self.hold.get(address.upper())
+        if until is not None and until <= time.time():
+            self.hold.pop(address.upper(), None)
+            self.scan_now.set()
+            return None
+        return until
 
     def stop(self):
         self.running = False
@@ -102,7 +129,9 @@ class BleManager(threading.Thread):
             try:
                 found = await BleakScanner.discover(timeout=5, return_adv=True)
                 self.state = tr('ready')
+                self.ok = True
             except Exception as e:
+                self.ok = False
                 self.state = tr('search failed: {}').format(e)
                 self.status(tr('Bluetooth search failed: {}').format(e))
                 found = {}
@@ -115,7 +144,7 @@ class BleManager(threading.Thread):
                 if model:
                     self.seen[addr] = dict(name=sky if sky in ('MC3000', 'MC5000') else model,
                                            rssi=adv.rssi, t=time.time())
-                if model and addr not in self.active and model not in self.ignore:
+                if model and addr not in self.active and model not in self.ignore and self.held(addr) is None:
                     r = BleReader(addr, self.out, model)
                     self.active[addr] = r
                     asyncio.create_task(skyrc.serve(self, r, sky) if sky else self._serve(r, model))

@@ -26,6 +26,8 @@ MODE_NAMES = {0: QT_TRANSLATE_NOOP('data', 'empty'), 1: QT_TRANSLATE_NOOP('data'
               12: QT_TRANSLATE_NOOP('data', 'analysis done'), 13: QT_TRANSLATE_NOOP('data', 'activation'),
               14: QT_TRANSLATE_NOOP('data', 'activation done'), 20: QT_TRANSLATE_NOOP('data', 'error')}
 CHARGE, DISCHARGE = TASKS[3], TASKS[5]                     # phase kinds
+IDLE = QT_TRANSLATE_NOOP('data', 'ready')                  # occupied slot without a task (mode 0, not empty)
+PAUSE = QT_TRANSLATE_NOOP('data', 'pause')                 # Sample.mode_str of a running task resting between phases
 RUNNING = QT_TRANSLATE_NOOP('data', 'running')             # session statuses
 FINISHED = QT_TRANSLATE_NOOP('data', 'done')
 REMOVED = QT_TRANSLATE_NOOP('data', 'removed')
@@ -64,6 +66,10 @@ RES_SUSPICIOUS = {'ni': 1000, 'li': 400}
 NOTE_RUNNING = QT_TRANSLATE_NOOP('data', 'task not finished yet')
 NOTE_MEASURING = QT_TRANSLATE_NOOP('data', 'discharge running: {mah} mAh so far')
 NOTE_INCOMPLETE = QT_TRANSLATE_NOOP('data', 'task {status}, result incomplete')
+NOTE_STOPPED = QT_TRANSLATE_NOOP('data', 'stopped by the charger: {reason}, result incomplete')
+NOTE_AT_LEAST = QT_TRANSLATE_NOOP('data', 'the cell holds more than {mah} mAh (the capacity limit set on the charger)')
+CAPACITY_LIMIT = QT_TRANSLATE_NOOP('data', 'capacity limit reached')     # SkyRC error texts (device_skyrc)
+CONTACT_LOST = QT_TRANSLATE_NOOP('data', 'contact lost')                  # the cell was taken out
 
 GAP_SECS = 300            # no data for this long -> session closed
 MIN_SECS = 10             # shorter sessions are not stored (e.g. an empty slot probing for a cell)
@@ -104,6 +110,8 @@ class Session:
     v_mid: Optional[int] = None
     early_drop: Optional[bool] = None
     points: list = field(default_factory=list, repr=False)    # (t, mV, mA) of the running discharge phase
+    stop_reason: str = ''             # error the charger stopped the task with (Sample.mode_str of mode 20)
+    paused: bool = False              # right now resting between phases (SkyRC; live only, not stored)
 
     def finish_curve(self):
         """The last discharge phase is over: evaluate its voltage curve."""
@@ -139,7 +147,7 @@ def rate(s: Session):
     """Returns (grade, note in English, health index or None)."""
     grade, notes, ohi = rate_values(s.discharge_mah, s.nominal or NOMINAL.get(s.size, 0), s.charge_mah, s.res_min,
                                s.status, measuring(s.status, [p.kind for p in s.phases]), s.chem,
-                               s.v_start, s.v_mid, s.early_drop, s.res_est)
+                               s.v_start, s.v_mid, s.early_drop, s.res_est, s.stop_reason)
     return grade, note_text(notes), ohi
 
 
@@ -258,10 +266,10 @@ def measuring(status, kinds):
 
 
 def rate_values(dis, nominal, chg, res, status, still_measuring=False, chem='', v_start=None, v_mid=None,
-                early_drop=None, res_est=False):
+                early_drop=None, res_est=False, stop_reason=''):
     """Returns (grade, notes, health index or None), notes = [(text, values)] (see note_text). The grade is the
     category of the health index (health()); the charge efficiency counts only once the charge after the discharge is
-    complete."""
+    complete. stop_reason: error the charger stopped the task with."""
     notes = []
     grade = NO_GRADE
     if res_est:
@@ -293,14 +301,19 @@ def rate_values(dis, nominal, chg, res, status, still_measuring=False, chem='', 
         grade = GRADES[4]
     if status == RUNNING:
         notes.append((NOTE_RUNNING, {}))
+    elif stop_reason and status != FINISHED:
+        notes.append((NOTE_STOPPED, dict(reason=stop_reason)))
+        if stop_reason == CAPACITY_LIMIT and dis:
+            notes.append((NOTE_AT_LEAST, dict(mah=dis)))
     elif status != FINISHED:
         notes.append((NOTE_INCOMPLETE, dict(status=status)))
     return grade, notes, h['ohi'] if h else None
 
 
 def note_text(notes, translate=lambda text: text):
-    """notes from rate_values -> one line. translate: e.g. i18n.tr_data (applied to the texts, status and quality)."""
-    return '; '.join(translate(text).format(**{k: translate(v) if k in ('status', 'quality', 'use') else v
+    """notes from rate_values -> one line. translate: e.g. i18n.tr_data (applied to the texts, status, quality, use
+    and reason)."""
+    return '; '.join(translate(text).format(**{k: translate(v) if k in ('status', 'quality', 'use', 'reason') else v
                                                for k, v in values.items()})
                      for text, values in notes)
 
@@ -322,8 +335,17 @@ class Tracker:
             cur = None
         if s.mode == 0:                                   # slot empty / idle
             if cur:
-                self._close(cur, FINISHED if cur.status == FINISHED else REMOVED)
+                # after an error the charger stopped the task itself (e.g. SkyRC: capacity limit), else the cell
+                # was taken out (SkyRC reports that as "contact lost")
+                if cur.stop_reason == CONTACT_LOST:
+                    cur.stop_reason = ''
+                self._close(cur, FINISHED if cur.status == FINISHED else ABORTED if cur.stop_reason else REMOVED)
             return None
+        if s.mode == 20:                                  # error: belongs to the running task, opens none
+            if cur is None:
+                return None
+            if s.mode_str and s.mode_str != MODE_NAMES[20]:
+                cur.stop_reason = s.mode_str
         task = TASKS.get(s.mode) or DONE.get(s.mode, f'mode {s.mode}')
         if cur and s.mode in TASKS and TASKS[s.mode] != cur.task:
             self._close(cur, ABORTED)                     # new task started on the same battery
@@ -334,6 +356,7 @@ class Tracker:
             self.current[key] = cur
         cur.end = s.t
         cur.dirty = True
+        cur.paused = s.mode_str == PAUSE
         if s.chem not in ('auto', 'unknown'):
             cur.chem = s.chem
         if s.size not in ('empty', 'unknown'):
