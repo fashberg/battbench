@@ -7,24 +7,27 @@ inserting it until it is taken out or another task starts – with their charge 
 that measured a discharge gets a **rating**. If you give your batteries **numbers**, every session can be assigned
 to its battery, and you see how each cell ages over the months.
 
-BattBench never changes anything on the charger: start, stop and settings are done on the charger as usual.
+ISDT chargers are only read: start, stop and settings are done on the charger as usual. A SkyRC MC5000 can also
+be controlled from BattBench (see *Profiles and charger control*).
 
 ### Before you start
 - Close the official **ISD Go** updater: it opens the chargers over USB exclusively.
-- Quit the **ISD Link** phone app (or switch off Bluetooth on the phone). An ISDT Air charger accepts only one
-  Bluetooth connection and is invisible to others while the phone is connected.
+- Quit the phone app – **ISD Link** for ISDT Air chargers, the **SkyRC** app for the MC3000 / MC5000 – or switch off
+  Bluetooth on the phone. A Bluetooth charger accepts only one connection and is invisible to others while the phone
+  is connected.
 - Chargers powered over USB (e.g. the N8): see *Power supply* below.
 
 ### Power supply
-- A charger that gets its power from the USB cable (e.g. the N8) most likely gets **too little power from the PC**:
-  a PC USB port usually supplies only 5 V at 0.5–1.5 A, without USB Power Delivery. The N8 then charges with only
-  about 100 mA per slot once about four slots charge (discharging is not affected), so an analysis of 8 cells can
-  take two days.
-- Better: connect the charger through a **USB-C hub with Power Delivery** (PD). A USB-PD power supply feeds the hub,
-  the hub's upstream cable goes to the PC – the charger gets its full power and BattBench still reads it.
-- Not every hub passes PD on to every port (many give the full power only to the computer). If the charge current
-  stays low, try another port or another hub.
-- Chargers with their own mains or DC power supply are not affected.
+A charger powered over USB (ISDT N8, C4 EVO, A4 Air, A8 Air, C4 Air – also when BattBench reads it over Bluetooth) gets
+**too little power** from a PC or laptop: their USB ports supply 5 V at 0.5–1.5 A (at most 10 W), without USB Power Delivery. The
+N8 then charges with only about 100 mA per slot once about four slots charge (discharging is not affected); an
+analysis of 8 cells can take two days.
+- **USB-C hubs** that pass USB Power Delivery on to a *device* port are rare and expensive.
+- Most **power injectors** and PD hubs charge the *host* – that is the PC, not the charger.
+- Charging with 5 V / 10 W stays slow, whatever cable you use.
+
+Chargers with a mains or DC supply are not affected, and a SkyRC MC5000 needs no cable to the PC at all (Bluetooth or
+a BattBench-ESP).
 
 ### Numbering batteries and models
 - Write a **number** on each cell (e.g. with a paint marker) and create it in the tab *Batteries* with *New battery …*
@@ -139,73 +142,76 @@ Panasonic eneloop, GP and Varta (internal resistance) and the 80 % / 50 % capaci
 MC3000 and Maha MH-C9000.
 
 ### Using the app
-- **Charger tabs** at the top: name, input voltage, connection (USB / Bluetooth symbol) and one LED per slot – grey
-  empty, orange ready (battery in, no task), yellow charging, red discharging, blue analysis / activation / cycle,
-  green done, blinking red error. The “+” tab
-  lists the supported chargers, the Bluetooth search and how to read the A4 Air.
-- **Charger offline**: if a charger is unplugged or stops answering for 30 seconds, a red notice covers its tiles
-  and its tab says *disconnected* / *no answer*. The charger may go on charging, but nothing is recorded meanwhile.
-  BattBench keeps trying (it opens the USB connection again every minute) and the notice goes away by itself as soon
-  as readings come in again. If it stays, unplug the USB cable and plug it in again.
-- **Slot tiles**: values of the slot; the bar shows the charger's progress, its arrows run towards 100 % while
-  charging and towards 0 % while discharging. Click a tile to see its session; if a battery is assigned, the
-  *Batteries* tab below opens with its history.
-- **Chart**: point at a curve, legend entry or axis to highlight it; click a legend entry or axis to show or hide a
-  value. Click a shaded phase (or a row in the phase list) to see only that phase. Drag to draw a frame and zoom to
-  it; once zoomed in, dragging in the lower two thirds scrolls through time (the upper third still draws a frame).
-  Right click zooms out; the house symbol (bottom left) shows everything again. The last discharge shows its plateau
-  (20–80 %) shaded darker, with the average voltage there (dashed) and the voltage after 5 % (dot).
-- **Export report …** (button above the rating, or right click on a session in the tables): rating, battery,
-  charger, main data and software versions, the chart, the details, the phase list, a chart for each charge /
-  discharge phase (can be left out) and at the end the explanations of the values and the section *Rating* of this
-  guide (*Rating details*). As an HTML page with the charts embedded or as a PDF (DIN A4, a heading never ends a page;
-  the explanations start a new page). The language is the app's or chosen in the dialog. The
-  charts carry "fashberg/battbench" top left.
-- **Tables** (bottom): click a column title to sort; the funnel in a column title filters like a spreadsheet.
-  *Sessions* lists all sessions, *Batteries* your batteries with their history on the right (clicking a battery shows
-  its latest session in the chart, clicking a session in the history shows that one), *Models* the model list,
-  *Chargers* the known chargers (rename them here – the name is stored only in BattBench).
-- **Keys in the tables**: arrow keys move, Enter edits a battery / model (in *Sessions*: jumps to the battery
-  field), Del deletes.
-- **Profiles (SkyRC MC5000)**: the tab *Profiles* keeps charge programs – battery type, task (charge, discharge,
-  cycle …), currents, capacity limit, voltages, cycles and their order, rests. Each value is chosen from the steps the
-  SkyRC app offers (e.g. currents in 50 mA steps, recharge for NiMH off or from 1.30 V); a new battery type, task or
-  Eneloop type (Std / Pro / Lite / Plus AA, AAA, C, D) fills in the app's defaults for it. *New* and *Copy* open the
-  profile in its own window. An MC5000 (connected over Bluetooth
-  or a BattBench-ESP) gets the panel *Charger control* right of its tiles: click a tile to choose its slot, Ctrl +
-  click for several; the panel shows what runs there and with which program (and which saved profile it is), starts
-  the chosen profile on the chosen slots and stops them. *Current settings* in the profile list starts each slot again
-  with its own settings. The button *Profile* holds the profile actions: *Create new from current settings …* opens a
-  new profile with the current settings of the slot as template, *New …* one with the app's defaults (as in the tab
-  *Profiles*); *Edit …* edits the chosen profile (*Clone* saves it as a new one) – with *Current settings* chosen it
-  changes them only for the next start (*Use*), or *Create new profile* saves them. The charger cannot report its
-  whole program: BattBench knows it for tasks it started itself; for others it shows battery type, task and the charge
-  / discharge current the charger reports (in steps of 0.1 A) and the profiles that fit. The same is in the right
-  click menu of a slot. The gear button in the panel's title opens the charger's own settings (key beep, notification
-  sound, completion tone, backlight, screen timeout): read from the charger, saved back to it. Below them is its
-  **Bluetooth connection**: the charger takes only one, so to use the SkyRC app *Pause 5 min* or *Switch off* frees it
-  (for BattBench's own Bluetooth and every BattBench-ESP at once; switched off stays off after a restart), *Switch on*
-  connects again; over a BattBench-ESP the dialog also opens its web page. While Bluetooth is paused or off, the tiles
-  say so (with the time left of a pause and a button to resume) instead of "Charger offline"; the gear works then,
-  too. A pause set on the ESP's web page shows here as well. Which way BattBench connects SkyRC chargers is set in the
-  "+" tab (*Connect SkyRC chargers*): *Automatic* switches to *Only through a BattBench-ESP* once one was connected,
-  then this PC's Bluetooth leaves them alone. This is the only time
-  BattBench sends anything that changes what a charger does, and only after you confirm it. A task that runs in a
-  ticked slot is replaced and starts again from zero.
-- **Deleting**: right click (or Del) on sessions, batteries or models (Ctrl / Shift selects several). Deleted entries are
-  only hidden; *Settings* can show them again (grey) – deleting such an entry once more removes it for good.
+
+#### Charger tabs and tiles
+- **Tabs** at the top: name, input voltage, connection symbol and one LED per slot – grey empty, orange ready (battery
+  in, no task), yellow charging, red discharging, blue analysis / activation / cycle, green done, blinking red error.
+  The "+" tab lists the supported chargers and the connection settings.
+- **Tiles**: values and state of each slot. Click a tile to see its session and, if a battery is assigned, its
+  history.
+- **Offline**: a charger that is unplugged or silent for 30 seconds is covered by a red notice. BattBench keeps trying
+  and the notice goes away by itself; if it stays, plug the USB cable in again.
+
+#### Chart
+- Point at a curve, legend entry or axis to highlight it; click a legend entry or axis to hide or show the value.
+- Click a shaded phase (or a row of the phase list) to see only that phase; click again for the whole run.
+- Drag a frame to zoom in, right click zooms out, the house symbol (bottom left) shows everything.
+- The last discharge shows its plateau (20–80 %) darker, the average voltage there (dashed) and the voltage after 5 %
+  (dot).
+- Where readings are missing the curves break off. For a running MC5000 task the voltage curve the charger keeps of
+  the current phase fills the gap (dashed, voltage only).
+
+#### Tables
+- Click a column title to sort; the funnel in a column title filters like a spreadsheet.
+- *Sessions* lists all sessions, *Batteries* your batteries with their history, *Models* the model list, *Chargers*
+  the known chargers (rename them here).
+- Enter edits, Del deletes (Ctrl / Shift selects several). Deleted entries are only hidden – *Settings* shows them
+  again, deleting them once more removes them for good.
+
+#### Reports
+*Export report …* (button above the rating, or right click on a session): rating, battery, charger, chart, details, a
+chart for each charge / discharge phase and the explanations of the values – as an HTML page or a PDF (DIN A4), in
+the app's language or another one.
+
+#### Profiles and charger control (SkyRC MC5000)
+1. **Create a profile** in the tab *Profiles* with *New*: battery type, task (charge, discharge, cycle …), currents,
+   limits. Each value is chosen from the steps the SkyRC app offers, a new type or task fills in its defaults. Or
+   take a running slot as template: *Profile → Create new from current settings* in the charger control.
+2. **Choose the slots**: click a tile; Ctrl + click a tile, or click the slot numbers in the *Charger control* panel,
+   for several.
+3. **Start or stop**: choose the profile in the panel and press *Start* – or *Current settings* to start the slots
+   again with their own program – or *Stop*. BattBench asks first; a task running in a slot is replaced and starts
+   from zero.
+
+- The panel shows what runs in the chosen slots and with which profile. For tasks BattBench did not start it shows
+  what the charger reports (type, task, currents) and the profiles that fit.
+- The gear in the panel opens the charger's settings (sounds, backlight, screen timeout) and its **Bluetooth**: the
+  charger takes only one connection, so *Pause 5 min* or *Switch off* frees it for the SkyRC app and *Switch on*
+  connects again – for this PC and a BattBench-ESP at once. A pause shows on the tiles with a countdown and
+  *Resume now*.
+- How SkyRC chargers are connected is set in the "+" tab (*Connect SkyRC chargers*): automatic, only through a
+  BattBench-ESP, or only over this PC's Bluetooth.
+- Starting and stopping profiles is the only time BattBench changes what a charger does, and only after you
+  confirmed it.
 
 ### Supported chargers
-| Charger | Connection | Slots | Tested |
-|---|---|---|---|
-| ISDT **N8** | USB | 8 | ✔ |
-| ISDT **A4 Air** | Bluetooth (recommended) or USB | 4 | ✔ |
-| ISDT N16 / N24 | USB | 16 / 24 | – |
-| ISDT C4, C4 EVO, A4, UC4 | USB | 4 | – |
-| ISDT A8 Air, C4 Air | Bluetooth | 8 / 6 | – |
-| SkyRC MC3000, MC5000 | Bluetooth | 4 | – |
+| Charger | Slots | Power | Data connection | Discharge / analysis | Tested |
+|---|---|---|---|---|---|
+| ISDT **N8** | 8 | USB-C – from a PC too little, see *Power supply* | USB | yes | ✔ |
+| ISDT **A4 Air** | 4 | USB-C (older models: micro-USB) – from a PC too little, see *Power supply* | Bluetooth (recommended) or USB | no | ✔ |
+| SkyRC **MC5000** | 4 | mains | Bluetooth of the PC, or a BattBench-ESP | yes | ✔ |
+| SkyRC MC3000 | 4 | DC | Bluetooth of the PC, or a BattBench-ESP | yes | – |
+| ISDT N16 / N24 | 16 / 24 | DC | USB | yes | – |
+| ISDT C4 | 4 | DC | USB | yes | – |
+| ISDT C4 Air | 6 | USB-C – from a PC too little, see *Power supply* | Bluetooth | no | – |
+| ISDT C4 EVO | 4 | USB-C – from a PC too little, see *Power supply* | USB | yes | – |
+| ISDT UC4 | 4 | see the charger's manual | USB | yes | – |
+| ISDT A8 Air | 8 | USB-C (older models: micro-USB) – from a PC too little, see *Power supply* | Bluetooth | no | – |
 
 Chargers marked “–” are supported by protocol but have not been tried on real hardware yet.
+
+A **BattBench-ESP** (https://github.com/fashberg/battbench-esp) next to a SkyRC charger keeps its Bluetooth connection and buffers the readings while
+BattBench is not running; BattBench fetches them when it starts.
 
 ### Your data
 All readings, sessions, batteries and models are stored in one database file (SQLite) on your computer, normally

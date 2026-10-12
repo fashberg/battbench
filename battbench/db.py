@@ -172,6 +172,7 @@ CREATE TABLE IF NOT EXISTS models (
 CREATE TABLE IF NOT EXISTS imported (file TEXT PRIMARY KEY, at REAL, size INTEGER, rows INTEGER);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS profiles (id INTEGER PRIMARY KEY, name TEXT, data TEXT);
+CREATE TABLE IF NOT EXISTS history (dev INTEGER, slot INTEGER, t REAL, mv INTEGER, PRIMARY KEY (dev, slot, t));
 """
 SESSION_FIELDS = ['id', 'slot', 'start', 'end', 'task', 'chem', 'size', 'status', 'nominal', 'label',
                   'discharge_mah', 'charge_mah', 'res_min', 'temp_max', 'grade', 'note', 'battery_id',
@@ -485,6 +486,17 @@ class DB:
         self.con.executemany(
             f"INSERT OR IGNORE INTO samples VALUES ({','.join('?' * len(COLS))})",
             [tuple(getattr(s, c) for c in COLS) for s in samples])
+
+    def add_history(self, dev, slot, points):
+        """Voltages the charger kept itself (MC5000 98) for a time without our own readings: [(t, mV)]. Kept apart
+        from the readings: no current, mAh or mode, so sessions and phases never see them."""
+        self.con.executemany('INSERT OR REPLACE INTO history VALUES (?, ?, ?, ?)',
+                             [(dev, slot, t, mv) for t, mv in points])
+
+    def history(self, dev, slot, t0, t1):
+        """(t, mV) from the charger's own voltage curve between t0 and t1 (see add_history)."""
+        return self.con.execute('SELECT t, mv FROM history WHERE dev=? AND slot=? AND t BETWEEN ? AND ? ORDER BY t',
+                                (dev, slot, t0, t1)).fetchall()
 
     def samples(self, dev, slot, t0, t1, secs=SAMPLE_SECS):
         """Readings for the chart: (t, mv, ma, res, mah, temp, mode), at most one per `secs` (thin_rows)."""
@@ -840,6 +852,8 @@ class DB:
             return
         self.con.execute('UPDATE OR IGNORE samples SET dev=? WHERE dev=?', (dst, src))
         self.con.execute('DELETE FROM samples WHERE dev=?', (src,))
+        self.con.execute('UPDATE OR IGNORE history SET dev=? WHERE dev=?', (dst, src))
+        self.con.execute('DELETE FROM history WHERE dev=?', (src,))
         dup = [r[0] for r in self.con.execute(
             'SELECT a.id FROM sessions a JOIN sessions b ON b.dev=? AND b.slot=a.slot AND b.start<=a.end '
             'AND b.end>=a.start WHERE a.dev=?', (dst, src))]

@@ -385,6 +385,8 @@ class Worker(QObject):
         self.merged = []          # devices merged into another one since the last emit (for the GUI)
         self.bt_addrs, self.bt_addrs_t = {}, 0     # dev -> Bluetooth address, read at
         self.bt_mirrored = {}     # address -> pause taken over from a BattBench-ESP (_bt_mirror)
+        self.gaps = {}            # (dev, slot) -> [(t0, t1)] without readings, to fill from the charger's curve
+        self.gap_asked = {}       # (dev, slot) -> time the curve was last asked for
 
     def stop(self):
         self.running = False
@@ -428,6 +430,7 @@ class Worker(QObject):
             self._commands()
             self._auto_compress()
             self._auto_backup()
+            self._fill_gaps()
             now = time.time()
             if now >= nxt_scan:
                 nxt_scan = now + 3
@@ -441,6 +444,10 @@ class Worker(QObject):
             if msg and msg[0] == 'cursor':           # a BattBench-ESP: readings up to here are stored
                 self.db.set_setting(msg[1], msg[2])
                 dirty = True
+            elif msg and msg[0] == 'history':        # voltages from the charger for a gap in the readings
+                self.db.add_history(*msg[1:])
+                dirty = True
+                self.data_changed.emit()
             elif msg:
                 kind, r = msg[0], msg[1]
                 if kind == 'open':
@@ -474,7 +481,11 @@ class Worker(QObject):
                     if self.online[r.dev]['via'] != via_of(r):
                         continue                        # second connection: data comes from the better one
                     store = []
+                    mc5000_conn = r.charger.model == 'MC5000' and via_of(r) in ('ble', 'net')
                     for s in batch:
+                        prev = self.latest.get((s.dev, s.slot))
+                        if mc5000_conn and prev and s.t - prev.t > self.GAP_FILL_SECS and s.mode in TASKS:
+                            self.gaps.setdefault((s.dev, s.slot), []).append((prev.t, s.t))
                         self.latest[(s.dev, s.slot)] = s
                         self.tracker.feed(s)
                         store += thinner.add(s)
@@ -772,6 +783,44 @@ class Worker(QObject):
         if changed:
             self.sessions_changed.emit()
             self._emit()
+
+    GAP_FILL_SECS = 120                   # readings this far apart in a running MC5000 task: ask for its curve
+    GAP_ASK_SECS = 60                     # at most so often per slot
+
+    def _fill_gaps(self):
+        """Gaps in the readings of a running MC5000 task (BattBench and the ESP were off, Bluetooth paused ...):
+        the charger keeps the voltage curve of the slot's current phase (98); its values inside a gap are stored
+        apart (DB.add_history) and shown in the chart. Earlier phases are gone on the charger."""
+        now = time.time()
+        for key in list(self.gaps):
+            if now - self.gap_asked.get(key, 0) < self.GAP_ASK_SECS:
+                continue
+            conn = self._mc5000_conn(key[0])
+            gaps = self.gaps.pop(key)
+            if conn is None:
+                continue
+            self.gap_asked[key] = now
+            threading.Thread(target=self._fill_gaps_run, args=(conn, key, gaps), daemon=True,
+                             name='mc5000-history').start()
+
+    def _fill_gaps_run(self, conn, key, gaps):
+        try:
+            reply = conn.command(mc5000.history_packet(key[1]))
+            t_end = time.time()
+        except Exception as e:
+            log.warning('MC5000 voltage curve of slot %d: %s', key[1] + 1, e)
+            return
+        curve = mc5000.parse_history(mc5000.split_frames(reply))
+        if not curve:
+            log.info('MC5000 voltage curve of slot %d: none (%s)', key[1] + 1, reply[:8].hex(' ') or 'no answer')
+            return
+        interval, volts = curve
+        points = [(t, mv) for t, mv in mc5000.history_points(interval, volts, t_end)
+                  if any(a + interval / 2 < t < b - interval / 2 for a, b in gaps)]
+        log.info('MC5000 voltage curve of slot %d: %d values every %d s, %d fill gaps %s', key[1] + 1, len(volts),
+                 interval, len(points), ', '.join(f'{hms(a)}-{hms(b)}' for a, b in gaps))
+        if points:
+            self.inbox.put(('history', key[0], key[1], points))
 
     def _mc5000_conn(self, dev):
         conns = self.conns.get(dev, {})
@@ -1373,6 +1422,7 @@ class CurvePlot(pg.GraphicsLayoutWidget):
     MIN_SPAN = {'°C': 10}
     ZERO = (1, 2)                     # current and mAh counter: signed, zero line drawn, zeros at the same height
     MIN_ZOOM = 60                     # s: zooming in stops at one minute (zooming out at the length of the data)
+    GAP_BREAK = 300                   # s without readings: the curves break off (no straight line across the gap)
     GRID = '#9a9a9a'
 
     def __init__(self):
@@ -1428,6 +1478,11 @@ class CurvePlot(pg.GraphicsLayoutWidget):
             if unit in self.MIN_SPAN:                         # 1 °C steps must not fill the whole height
                 vb.setLimits(minYRange=self.MIN_SPAN[unit])
             self.curves.append(curve)
+        # voltage the charger kept itself (MC5000) for a gap in the readings: dashed, in the voltage colour
+        self.hist_curve = pg.PlotDataItem(pen=pg.mkPen(self.SERIES[0][1], width=1.6, style=Qt.DashLine),
+                                          connect='finite')
+        self.vb.addItem(self.hist_curve)
+        self._hist_raw = []
         self.zero_lines = {}
         for k in self.ZERO:
             line = pg.InfiniteLine(pos=0, angle=0, movable=False, pen=pg.mkPen('#666666', width=1))
@@ -1519,6 +1574,9 @@ class CurvePlot(pg.GraphicsLayoutWidget):
         for item in (self.curves[i], self.axes[i]):
             item.setOpacity(dim)
         self.curves[i].setVisible(on)
+        if i == 0:
+            self.hist_curve.setVisible(on)
+            self.hist_curve.setOpacity(dim)
         if i in self.zero_lines:
             self.zero_lines[i].setVisible(on)
             self.zero_lines[i].setOpacity(dim)
@@ -1599,9 +1657,14 @@ class CurvePlot(pg.GraphicsLayoutWidget):
             self.phase_sel = start
             self.set_data(*self._raw)
 
-    def set_data(self, rows, phases, title='', keep_view=False):
-        """rows: (t, mv, ma, res, mah, temp, mode) from DB.samples; phases: (kind, start, end, mah)."""
+    def set_data(self, rows, phases, title='', keep_view=False, hist=None):
+        """rows: (t, mv, ma, res, mah, temp, mode) from DB.samples; phases: (kind, start, end, mah); hist: (t, mV) the
+        charger kept for gaps in the readings (DB.history), None = as before (same session)."""
         start = rows[0][0] if rows else None
+        if hist is not None:
+            self._hist_raw = list(hist)
+        elif start != self.session_start:
+            self._hist_raw = []
         if start != self.session_start:              # another session: whole run again
             self.session_start, self.phase_sel = start, None
             keep_view = False
@@ -1615,6 +1678,11 @@ class CurvePlot(pg.GraphicsLayoutWidget):
         vr = self.vb.viewRange()[0] if keep_view and self.data is not None else None
         if rows:
             a = np.array(rows, dtype=float)
+            cut = np.where(np.diff(a[:, 0]) > self.GAP_BREAK)[0] + 1
+            if len(cut):                              # a row of NaN in the middle of each gap breaks the lines
+                fill = np.full((len(cut), a.shape[1]), np.nan)
+                fill[:, 0] = (a[cut - 1, 0] + a[cut, 0]) / 2
+                a = np.insert(a, cut, fill, axis=0)
             if not vr:
                 self.t0 = phase[1] if phase else a[0, 0]
             x = a[:, 0] - self.t0
@@ -1636,6 +1704,11 @@ class CurvePlot(pg.GraphicsLayoutWidget):
                 curve.setData([], [])
             else:
                 curve.setData(self.data[0], self.data[i + 1])
+        hist = [(t, mv) for t, mv in self._hist_raw if not phase or phase[1] <= t <= phase[2]]
+        if self.data is not None and hist:
+            self.hist_curve.setData([t - self.t0 for t, _mv in hist], [mv / 1000 for _t, mv in hist])
+        else:
+            self.hist_curve.setData([], [])
         for r in self.regions:
             self.vb.removeItem(r)
         self.regions = []
@@ -1758,9 +1831,9 @@ class CurvePlot(pg.GraphicsLayoutWidget):
         self.vline.setPos(xs[i])
         self.vline.show()
         stamp = datetime.fromtimestamp(self.t0 + xs[i]).strftime(tr('%b %d, %H:%M:%S'))
-        values = [f'{self.data[1][i]:.3f} V', f'{self.data[2][i]:.0f} mA', f'{self.data[3][i]:.0f} mAh',
-                  '– mΩ' if np.isnan(self.data[4][i]) else f'{self.data[4][i]:.0f} mΩ',
-                  '– °C' if np.isnan(self.data[5][i]) else f'{self.data[5][i]:.0f} °C']
+        values = [f'– {unit}' if np.isnan(self.data[k + 1][i]) else f'{self.data[k + 1][i]:{fmt}} {unit}'
+                  for k, (fmt, unit) in enumerate((('.3f', 'V'), ('.0f', 'mA'), ('.0f', 'mAh'), ('.0f', 'mΩ'),
+                                                   ('.0f', '°C')))]
         lines = ''.join(f"<br><span style='color:{color}'>{f'<b>{v}</b>' if k == self.focus else v}</span>"
                         for k, (v, (_u, color), on) in enumerate(zip(values, self.SERIES, self.shown))
                         if on and self.avail[k])
@@ -3434,10 +3507,11 @@ class InfoDialog(QDialog):
         self.bt_list = QLabel()
         self.bt_list.setWordWrap(True)
         lay.addWidget(self.bt_list)
-        hint = QLabel(tr('<b>Air charger not found?</b> Quit the <b>ISD Link</b> app on your phone (or switch off '
-                         'Bluetooth on the phone). The charger accepts only one Bluetooth connection and cannot be '
-                         'seen by others while the phone is connected. In turn, ISD Link cannot reach it while '
-                         'BattBench is connected.'))
+        hint = QLabel(tr('<b>Bluetooth charger not found?</b> Quit the app on your phone – <b>ISD Link</b> for ISDT '
+                         'Air chargers, the <b>SkyRC</b> app for the MC3000 / MC5000 – or switch off Bluetooth on the '
+                         'phone. A charger accepts only one Bluetooth connection and cannot be seen by others while the '
+                         'phone is connected. In turn, the app cannot reach it while BattBench or a BattBench-ESP is '
+                         'connected.'))
         hint.setWordWrap(True)
         hint.setStyleSheet('background: palette(alternate-base); border: 1px solid #e69138; border-radius: 6px; padding: 8px;')
         lay.addWidget(hint)
@@ -4081,7 +4155,7 @@ class ProfileDialog(QDialog):
 
 
 class ControlPanel(QFrame):
-    """Right of the tiles of a charger BattBench can control (MC5000): the chosen slots (click, Ctrl + click for
+    """Right of the tiles of a charger BattBench can control (MC5000): the chosen slots (tile click, Ctrl + click for
     more), what runs there and with which program, start a profile, stop, save the program as a profile."""
 
     def __init__(self, main, dev, slots):
@@ -4108,7 +4182,7 @@ class ControlPanel(QFrame):
                             'QToolButton:checked { background: #1a237e; color: white; border: 1px solid white;'
                             ' font-weight: bold; }')
             b.setFixedHeight(HEAD_HEIGHT - 6)
-            b.setToolTip(tr('Slot {} (click a tile, Ctrl + click for several)').format(s + 1))
+            b.setToolTip(tr('Slot {}: a click chooses it, another click leaves it out again').format(s + 1))
             b.clicked.connect(lambda _c, s=s: self._toggle(s))
             head.addWidget(b)
             self.buttons.append(b)
@@ -4169,7 +4243,7 @@ class ControlPanel(QFrame):
     def _toggle(self, slot):
         chosen = set(self.main.ctrl_sel.get(self.dev, ())) ^ {slot}
         self.main.ctrl_sel[self.dev] = chosen or {slot}
-        self.main._mark(self.main.sel)
+        self.main.follow_ctrl(self.dev)
 
     def _profiles(self):
         last = self.main.db.setting('last_profile')
@@ -4245,7 +4319,7 @@ class ControlPanel(QFrame):
             else:
                 parts.append(tr('Different settings – choose only one slot to see them.'))
         else:
-            parts.append(tr('Click a slot tile (Ctrl + click for several).'))
+            parts.append(tr('Choose a slot: click its tile or its number above.'))
         temp = [self.main.temp_progs[(self.dev, s)] for s in self.chosen if (self.dev, s) in self.main.temp_progs]
         if self.combo.currentData() == 'current' and temp:
             parts.append('<br><i>' + tr('Changed current settings, used at the next start:') + '</i><br>' +
@@ -4389,7 +4463,7 @@ class ChargerSettingsDialog(QDialog):
 
 
 class ReportDialog(QDialog):
-    """Choices for "Export report …": language, format (HTML or PDF), a chart per phase (remembered)."""
+    """Choices for "Export report …": language and format (HTML or PDF), both remembered; a chart per phase (on)."""
 
     def __init__(self, parent, has_phases):
         super().__init__(parent)
@@ -4405,7 +4479,7 @@ class ReportDialog(QDialog):
         form.addRow(tr('Language:'), self.language)
         lay.addLayout(form)
         self.phases = QCheckBox(tr('A chart for each charge / discharge phase'))
-        self.phases.setChecked(has_phases and settings.value('report_phases', True, type=bool))
+        self.phases.setChecked(has_phases)    # on by default, every time (not remembered)
         self.phases.setEnabled(has_phases)
         if not has_phases:
             self.phases.setToolTip(tr('This session has only one phase.'))
@@ -4427,8 +4501,6 @@ class ReportDialog(QDialog):
     def _ok(self):
         settings = QSettings('battbench', 'battbench')
         settings.setValue('report_lang', self.language.currentData())
-        if self.phases.isEnabled():
-            settings.setValue('report_phases', self.phases.isChecked())
         settings.setValue('report_format', self.format.currentData())
         self.accept()
 
@@ -4666,6 +4738,8 @@ class MainWindow(QMainWindow):
         vsplit.setSizes([200, 535, 215])          # tiles, chart + result, tables
         vsplit.setStretchFactor(0, 0)             # a taller window goes to the chart and the tables
         vsplit.setCollapsible(0, False)           # the tiles never get cut off
+        self.tiles_user = False                   # the user made the tile area higher: keep it (see _fit_tiles)
+        vsplit.splitterMoved.connect(self._tiles_dragged)
         root.addWidget(vsplit, 1)
         self.setCentralWidget(central)
 
@@ -4737,6 +4811,8 @@ class MainWindow(QMainWindow):
             t.menu.connect(self._tile_menu)
             if control:
                 t.setMinimumWidth(170)
+                t.setToolTip(tr('Click: show this slot and choose it in the charger control; Ctrl + click: choose '
+                                'several slots there'))
             grid.addWidget(t, slot // n, slot % n)
             tiles.append(t)
         grid.setRowStretch(grid.rowCount(), 1)
@@ -4793,10 +4869,10 @@ class MainWindow(QMainWindow):
             row['tab'].set_active(d == dev)
         self._fit_tiles()
 
-    def _fit_tiles(self):
-        """The tile area gets just the room the shown charger's tiles (and control panel) need, the chart the rest."""
+    def _tiles_need(self):
+        """Height of the tile area for the shown charger's tiles (and control panel), None without one."""
         if self.shown_dev not in self.rows:
-            return
+            return None
         row = self.rows[self.shown_dev]
         page, scroll = row['page'], row['scroll']
         if scroll is not None:            # never lower than a tile, plus the scroll bar when the tiles scroll
@@ -4804,11 +4880,25 @@ class MainWindow(QMainWindow):
             h = scroll.widget().sizeHint().height() + (bar.sizeHint().height() if bar.maximum() > 0 else 0)
             if scroll.minimumHeight() != h:
                 scroll.setMinimumHeight(h)
-        sizes = self.vsplit.sizes()
         page_h = max(page.sizeHint().height(), page.minimumSizeHint().height())
-        need = self.top.sizeHint().height() - self.stack.sizeHint().height() + page_h
-        if sizes[0] != need and sizes[1] > need - sizes[0]:
+        return self.top.sizeHint().height() - self.stack.sizeHint().height() + page_h
+
+    def _fit_tiles(self):
+        """The tile area gets just the room the tiles need, the chart the rest - grown when the tiles need more,
+        lowered only while the user has not made it higher by hand."""
+        need = self._tiles_need()
+        sizes = self.vsplit.sizes()
+        if need is None or abs(sizes[0] - need) <= 4 or sizes[0] > need and self.tiles_user:
+            return                        # (a few px off: the splitter's own minimum, not worth moving)
+        if sizes[1] > need - sizes[0]:
             self.vsplit.setSizes([need, sizes[1] - (need - sizes[0]), *sizes[2:]])
+
+    def _tiles_dragged(self, _pos, index):
+        """Splitter dragged by the user: higher than needed = keep it; dragged back to the tiles = fit again."""
+        if index == 1:
+            need = self._tiles_need()
+            self.tiles_user = need is not None and self.vsplit.sizes()[0] > need + 4
+            self.db.set_setting('tiles_user', '1' if self.tiles_user else '')
 
     def show_charger(self, dev):
         """Click on a charger tab: its tiles, and the slot last selected there (else the first running one)."""
@@ -5314,7 +5404,8 @@ class MainWindow(QMainWindow):
             dev, slot, t0, t1, phases = s['dev'], s['slot'], s['start'], s['end'], s['phases']
             self.plot.show_curve = not is_measuring(s)          # a running discharge is not over yet
             title = ' · '.join((self.dev_name(dev), tr('Slot {}').format(slot + 1), fmt_t(t0), tr_data(s['task']))) + ' (live)'
-        self.plot.set_data(self.db.samples(dev, slot, t0, t1 + 1), phases, title, keep_view)
+        self.plot.set_data(self.db.samples(dev, slot, t0, t1 + 1), phases, title, keep_view,
+                           self.db.history(dev, slot, t0, t1 + 1))
 
     def _row_changed(self, row, _col, prev_row, _prev_col):
         if row >= 0 and row != prev_row:
@@ -5399,7 +5490,7 @@ class MainWindow(QMainWindow):
             chosen ^= {slot}                         # Ctrl: more slots for the control panel
             if not chosen:
                 chosen.add(slot)
-            self._mark(self.sel)
+            self.follow_ctrl(dev)
             self._update_panels()
             return
         self.ctrl_sel[dev] = {slot}
@@ -5410,6 +5501,15 @@ class MainWindow(QMainWindow):
         if bid is not None:                          # battery in the slot: show its history
             self.tabs.setCurrentWidget(self.btab)
             self.btab.show_battery(bid)
+
+    def follow_ctrl(self, dev):
+        """Slots chosen in the charger control changed: with just one left that is not the slot shown (chart, details),
+        show that one; else only mark the choice."""
+        chosen = self.ctrl_sel.get(dev, set())
+        if len(chosen) == 1 and self.sel != (dev, next(iter(chosen))):
+            self.select_slot((dev, next(iter(chosen))))
+        else:
+            self._mark(self.sel)
 
     def open_session(self, sid):
         self.auto_pick = False
@@ -5547,6 +5647,7 @@ class MainWindow(QMainWindow):
                 continue
             if len(sizes) == split.count() and all(x >= 0 for x in sizes) and sum(sizes) > 0:
                 split.setSizes(sizes)
+        self.tiles_user = bool(self.db.setting('tiles_user'))
         self._fit_tiles()
         for key, t in self.width_tables().items():
             try:

@@ -69,6 +69,10 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
   once together with the reading before it and the last one under load (resume rebuilds the same sessions and
   phases). Pauses of pulsed charging (A4 Air, 0 mA) are no change and are skipped. The worker flushes the
   held-back readings on exit. `DB.samples` thins older 1 s data the same way for the chart (`thin_rows`).
+- **Charger's own voltage curve** (MC5000 `98`, current phase only): `Worker` notes gaps over `GAP_FILL_SECS` in a
+  running task (`self.gaps`), `_fill_gaps` asks for the curve (`mc5000.parse_history` / `history_points`, last value
+  = now) and stores the values inside the gaps in the table `history` (`DB.add_history`) – never as readings, they
+  have no current / mAh / mode. `CurvePlot` draws them dashed (`hist`), its curves break at gaps over `GAP_BREAK`.
 - **DB upgrades** in `DB.__init__` via `PRAGMA user_version` (currently 14): 1 N8 size "AA/AAA", 2 N8 mode 9/10 →
   13/14, 3 drop sessions < 10 s, 4 German stored values → English, 5 / 6 soft delete, 8 thin readings
   (`thin_samples`; 7 was an unreleased first try), 10 drop glitch phases of a single reading and re-rate all
@@ -112,7 +116,7 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
   esp = `BleManager.ignore` gets 'SkyRC', direct = no `NetHost`s; unset 'auto' becomes 'esp' at the first ESP
   connection (`Worker.skyrc_changed`).
 - Settings: `QSettings('battbench', 'battbench')` keys `a4`, `skyrc`, `esp_hosts`, `esp_auto`, `lang`, `show_deleted`,
-  `compress`, `hidden_series`, `report_lang` / `report_phases` / `report_format` / `report_dir`, `backup_hours` /
+  `compress`, `hidden_series`, `report_lang` / `report_format` / `report_dir`, `backup_hours` /
   `backup_keep` / `backup_daily` / `backup_weekly` / `backup_monthly`.
   Window position / size, splitter positions and column widths the user dragged (`cols_<table>`, see
   `MainWindow.width_tables`) are stored in the database (`settings` table, `save_layout` / `restore_layout`); a window
@@ -129,7 +133,14 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
 
 ## Release build (Windows)
 `powershell -ExecutionPolicy Bypass -File packaging\build.ps1` → `build\BattBench-<version>-setup.exe` (needs NSIS 3).
-`packaging/release.py [--version 2026.10] [--dry-run] [--no-build]`: clean tree required; sets `__version__`, commits
-"Release …", tags `v…`, runs build.ps1, asks before pushing. Interactive – the user runs it, not Claude.
+**Branches**: work happens on `devel` (pushed to `origin` only, every commit); `main` holds one squash commit per
+release and is identical on `origin` and `github`. Never push `devel` to `github`, never commit on `main` by hand.
+`packaging/release.py [--version 2026.10] [--dry-run] [--build]` on a clean `devel`: sets `__version__` and commits
+"Release …" on `devel`, adds a commit with exactly `devel`'s files to `main` (message: the `devel` commits since the
+last release), tags it `v…` and asks before pushing (`devel` → origin, `main` + tag → origin and github). The tag on
+github starts `.github/workflows/release.yml` (Windows runner: `.venv`, NSIS, build.ps1 from the tagged commit, so the
+version shows the public commit) which publishes the GitHub release with the installer; notes = the release commit's
+message + the install text. `--build` also builds the installer locally. Interactive – the user runs it, or asks
+Claude to.
 The installer is per-user (no admin), adds a Start menu entry and an optional desktop shortcut; uninstall asks whether
 to delete the database. Silent: `/S`, target folder `/D=…`.

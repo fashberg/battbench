@@ -22,6 +22,7 @@ import queue
 import time
 from typing import Optional
 
+from . import mc5000
 from .device import Sample
 from .model import PAUSE
 from .i18n import QT_TRANSLATE_NOOP, tr
@@ -190,19 +191,25 @@ async def serve(manager, r, hint):
         return None
 
     async def send(pkt, timeout=2.0):
-        """A charger command (mc5000 packets); returns its answer with the same command byte, b'' = none."""
+        """A charger command (mc5000 packets); returns its answer with the same command byte, b'' = none. 98 (voltage
+        curve): all its pages one after the other, as a BattBench-ESP returns them."""
         while not inbox.empty():
             inbox.get_nowait()
         await client.write_gatt_char(FFE1, pkt, response=False)
-        end = time.time() + timeout
+        end = time.time() + (4.0 if pkt[2] == 0x98 else timeout)
+        pages = []
         while time.time() < end:
             try:
                 d = await asyncio.wait_for(inbox.get(), max(0.01, end - time.time()))
             except asyncio.TimeoutError:
                 break
             if len(d) >= 3 and d[0] == 0x0F and d[2] == pkt[2]:
-                return d
-        return b''
+                if pkt[2] != 0x98:
+                    return d
+                pages.append(d)
+                if mc5000.history_complete(pages):
+                    break
+        return b''.join(pages)
 
     opened = False
     client = None

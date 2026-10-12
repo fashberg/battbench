@@ -68,10 +68,10 @@ def _plot(A):
     return plot
 
 
-def _chart(plot, rows, phases, title, phase=None):
+def _chart(plot, rows, phases, title, phase=None, hist=None):
     """(svg text, QImage for the PDF) of the whole run or of one phase (start time)."""
     plot.phase_sel = phase
-    plot.set_data(rows, phases, title)
+    plot.set_data(rows, phases, title, hist=hist)
     plot.title_label.setText(_esc(title), color='#222', size='11pt')
     plot.reset_btn.hide()
     for _ in range(3):                    # one normal paint first: pyqtgraph updates its view transforms there
@@ -200,7 +200,8 @@ def _build(A, db, d, battery_id, dev_name, with_phases, esp):
     phases = list(d.get('phases') or [])
     plot = _plot(A)
     plot.show_curve = not A.is_measuring(d)
-    charts = [(tr('Whole run'), *_chart(plot, rows, phases, head))]
+    hist = db.history(d['dev'], d['slot'], d['start'], d['end'] + 1)
+    charts = [(tr('Whole run'), *_chart(plot, rows, phases, head, hist=hist))]
     if with_phases and len(phases) > 1:
         for i, (kind, a, e, mah) in enumerate(phases):
             title = tr('Phase {}: {}').format(i + 1, tr_data(kind)) + \

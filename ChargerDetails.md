@@ -101,7 +101,10 @@ described below, and nothing else.
   - With more than one bit in the mask only the lowest slot is meant, so BattBench sends one packet per slot.
   - `93 <mask>`, a start command in older captures, has no effect on firmware 2.02 and is not sent.
   - Error 13 (battery already full at the start) counts as done.
-  - `98 <mask>` returns the charger's stored voltage curve of the slot's task in pages (not used yet).
+  - `98 <mask>` returns the voltage curve the charger keeps of the slot's **current phase** in up to 3 packets
+    `0F len 98 mask pages page interval_s mV(LE)…` of up to 100 values each (at most 300; the interval grows with
+    the phase, e.g. 64 s after about 3 h; the last value is the current one). BattBench asks for it when the
+    readings of a running task have a gap and keeps the values inside the gap apart from the readings.
   - `5F <mask>` (read only) → `0F 0C 5F mask status type ? task charge discharge 00 00 ? cs`: the slot's programmed
     charge and discharge current for its battery type in steps of 100 mA (rounded down). BattBench asks it for the
     slots chosen in the control panel; it is the only part of a program besides type and task the charger reports.

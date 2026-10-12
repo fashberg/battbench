@@ -214,9 +214,25 @@ def acked(reply: bytes, cmd: int) -> bool:
             _cs(reply[2:-1]) == reply[-1])
 
 
+def split_frames(data: bytes):
+    """Packets sent one after the other (0F len ...; e.g. the pages of 98 in one reply of a BattBench-ESP)."""
+    out, i = [], 0
+    while i + 2 <= len(data) and data[i] == 0x0F:
+        out.append(data[i:i + data[i + 1] + 2])
+        i += data[i + 1] + 2
+    return out
+
+
+def history_complete(pages) -> bool:
+    """All pages of a 98 answer are there (byte 4: number of pages, byte 5: this page, from 1)."""
+    got = {p[5] for p in pages if len(p) > 6 and p[2] == 0x98}
+    return bool(got) and got >= set(range(1, pages[0][4] + 1))
+
+
 def parse_history(pages):
-    """98 answers (0F len 98 mask total page interval_s mV LE ...) -> (interval s, [mV]) or None. Layout as the
-    app reads it; not yet checked on a real charger."""
+    """98 answers (0F len 98 mask pages page interval_s mV LE ...) -> (interval s, [mV]) or None. Checked on an
+    MC5000 (fw 2.02): the curve of the slot's current phase only, at most 300 values (3 pages of 100); the interval
+    grows with the length of the phase (64 s after about 3 h); the last value is the current one."""
     volts, interval = [], 0
     for p in sorted(pages, key=lambda p: p[5] if len(p) > 6 else 0):
         if len(p) < 8 or p[2] != 0x98:
@@ -224,7 +240,13 @@ def parse_history(pages):
         interval = p[6]
         body = p[7:-1]
         volts += [body[i] | body[i + 1] << 8 for i in range(0, len(body) - 1, 2)]
-    return (interval, volts) if volts else None
+    return (interval, volts) if volts and interval else None
+
+
+def history_points(interval, volts, t_end):
+    """[(t, mV)] of a 98 curve whose last value was taken at t_end (when it was asked for)."""
+    n = len(volts)
+    return [(t_end - (n - 1 - i) * interval, mv) for i, mv in enumerate(volts) if mv]
 
 
 def from_status(raw: bytes):

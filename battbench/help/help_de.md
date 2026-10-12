@@ -8,24 +8,27 @@ einem Schacht, vom Einlegen bis zum Entnehmen oder bis eine andere Aufgabe start
 Entlade**phasen**. Ein Vorgang mit gemessener Entladung bekommt eine **Bewertung**. Gibst du deinen Akkus
 **Nummern**, lässt sich jeder Vorgang seinem Akku zuordnen, und du siehst über die Monate, wie jeder Akku altert.
 
-BattBench verändert nie etwas am Ladegerät: Starten, Stoppen und Einstellungen machst du wie gewohnt am Gerät.
+ISDT-Ladegeräte werden nur gelesen: Starten, Stoppen und Einstellungen machst du wie gewohnt am Gerät. Ein SkyRC
+MC5000 lässt sich auch aus BattBench steuern (siehe *Profile und Ladegerätsteuerung*).
 
 ### Vor dem Start
 - Das offizielle Update-Programm **ISD Go** schließen: Es belegt die Ladegeräte über USB exklusiv.
-- Die Handy-App **ISD Link** beenden (oder Bluetooth am Handy ausschalten). Ein ISDT-Air-Ladegerät nimmt nur eine
-  Bluetooth-Verbindung an und ist für andere unsichtbar, solange das Handy verbunden ist.
+- Die Handy-App beenden – **ISD Link** bei ISDT-Air-Ladegeräten, die **SkyRC**-App beim MC3000 / MC5000 – oder
+  Bluetooth am Handy ausschalten. Ein Bluetooth-Ladegerät nimmt nur eine Verbindung an und ist für andere
+  unsichtbar, solange das Handy verbunden ist.
 - Ladegeräte mit Strom über USB (z. B. der N8): siehe *Stromversorgung* unten.
 
 ### Stromversorgung
-- Ein Ladegerät, das seinen Strom über das USB-Kabel bekommt (z. B. der N8), bekommt **vom PC vermutlich zu wenig
-  Leistung**: Ein USB-Anschluss am PC liefert meist nur 5 V mit 0,5–1,5 A, ohne USB Power Delivery. Der N8 lädt dann
-  mit nur etwa 100 mA pro Schacht, sobald etwa vier Schächte laden (Entladen ist nicht betroffen); eine Analyse von
-  8 Akkus dauert so leicht zwei Tage.
-- Besser: das Ladegerät über einen **USB-C-Hub mit Power Delivery** (PD) anschließen. Ein USB-PD-Netzteil versorgt den
-  Hub, das Kabel des Hubs geht zum PC – das Ladegerät bekommt seine volle Leistung, und BattBench liest es trotzdem.
-- Nicht jeder Hub gibt PD an jeden Anschluss weiter (viele geben die volle Leistung nur an den Computer). Bleibt der
-  Ladestrom niedrig, einen anderen Anschluss oder einen anderen Hub probieren.
-- Ladegeräte mit eigenem Netzteil oder DC-Eingang sind nicht betroffen.
+Ein über USB versorgtes Ladegerät (ISDT N8, C4 EVO, A4 Air, A8 Air, C4 Air – auch wenn BattBench es per Bluetooth liest)
+bekommt von PC oder Laptop **zu wenig Leistung**: Deren USB-Anschlüsse liefern 5 V mit 0,5–1,5 A (höchstens 10 W), ohne USB
+Power Delivery. Der N8 lädt dann mit nur etwa 100 mA pro Schacht, sobald etwa vier Schächte laden (Entladen ist nicht
+betroffen); eine Analyse von 8 Akkus dauert so leicht zwei Tage.
+- **USB-C-Hubs**, die USB Power Delivery an einen *Geräte*-Anschluss weitergeben, sind selten und teuer.
+- Die meisten **Power-Injektoren** und PD-Hubs laden den *Host* – das ist der PC, nicht das Ladegerät.
+- Laden mit 5 V / 10 W bleibt langsam, egal mit welchem Kabel.
+
+Ladegeräte mit Netz- oder DC-Versorgung sind nicht betroffen, und ein SkyRC MC5000 braucht gar kein Kabel zum PC (Bluetooth
+oder ein BattBench-ESP).
 
 ### Akkus nummerieren und Modelle
 - Schreib eine **Nummer** auf jeden Akku (z. B. mit einem Lackstift) und leg ihn im Reiter *Akkus* mit
@@ -143,80 +146,78 @@ Panasonic eneloop, GP und Varta (Innenwiderstand) und den 80-%- / 50-%-Kapazitä
 MC3000 und Maha MH-C9000.
 
 ### Bedienung
-- **Ladegeräte-Reiter** oben: Name, Eingangsspannung, Verbindung (USB-/Bluetooth-Symbol) und eine LED pro Schacht –
-  grau leer, orange bereit (Akku eingelegt, kein Vorgang), gelb lädt, rot entlädt, blau Analyse/Aktivierung/Zyklus,
-  grün fertig, rot blinkend Fehler. Der Reiter „+“
-  zeigt die unterstützten Ladegeräte, die Bluetooth-Suche und wie der A4 Air gelesen wird.
-- **Ladegerät offline**: Ist ein Ladegerät abgesteckt oder antwortet es 30 Sekunden lang nicht, liegt ein roter
-  Hinweis über seinen Kacheln und sein Reiter zeigt *getrennt* / *keine Antwort*. Das Ladegerät lädt eventuell weiter,
-  aufgezeichnet wird in der Zeit aber nichts. BattBench versucht es weiter (öffnet die USB-Verbindung jede Minute neu),
-  der Hinweis verschwindet von selbst, sobald wieder Messwerte kommen. Bleibt er, das USB-Kabel ab- und wieder
-  anstecken.
-- **Schacht-Kacheln**: Werte des Schachts; der Balken zeigt den Fortschritt des Ladegeräts, seine Pfeile laufen beim
-  Laden Richtung 100 % und beim Entladen Richtung 0 %. Ein Klick zeigt den Vorgang des Schachts; ist ein Akku
-  zugeordnet, öffnet sich unten der Tab *Akkus* mit seinem Verlauf.
-- **Diagramm**: Maus auf eine Kurve, einen Legenden-Eintrag oder eine Achse hebt diesen Wert hervor; ein Klick auf
-  Legende oder Achse blendet ihn aus oder ein. Ein Klick auf eine farbige Phase (oder eine Zeile der Phasenliste)
-  zeigt nur diese Phase. Ziehen zieht einen Rahmen und zoomt darauf; ist hineingezoomt, scrollt Ziehen in den unteren
-  zwei Dritteln durch die Zeit (im oberen Drittel weiterhin Rahmen). Ein Rechtsklick zoomt heraus; das Haus-Symbol
-  (unten links) zeigt wieder alles. Bei der letzten Entladung ist das Plateau (20–80 %) dunkler hinterlegt, mit der
-  mittleren Spannung dort (gestrichelt) und der Spannung nach 5 % (Punkt).
-- **Bericht exportieren …** (Knopf über der Bewertung, oder Rechtsklick auf einen Vorgang in den Tabellen):
-  Bewertung, Akku, Ladegerät, Hauptdaten und Softwareversionen, das Diagramm, die Details, die Phasenliste, ein
-  Diagramm für jede Lade-/Entladephase (lässt sich weglassen) und am Ende die Erläuterungen der Werte und der
-  Abschnitt *Bewertung* dieser Anleitung (*Details zur Bewertung*). Als HTML-Seite mit eingebetteten Diagrammen oder
-  als PDF (DIN A4, eine Überschrift steht nie allein am Seitenende; die Erläuterungen beginnen auf einer neuen Seite). Die Sprache ist
-  die der App oder im Dialog gewählt. Die Diagramme tragen oben links „fashberg/battbench“.
-- **Tabellen** (unten): Klick auf einen Spaltentitel sortiert; der Trichter im Spaltentitel filtert wie in einer
-  Tabellenkalkulation. *Vorgänge* listet alle Vorgänge, *Akkus* deine Akkus mit ihrem Verlauf rechts (ein Klick auf
-  einen Akku zeigt seinen letzten Vorgang im Diagramm, ein Klick auf einen Vorgang im Verlauf diesen), *Modelle* die
-  Modellliste, *Ladegeräte* die bekannten Ladegeräte (hier umbenennen – der Name wird nur in BattBench gespeichert).
-- **Tasten in den Tabellen**: Pfeiltasten bewegen, Enter bearbeitet einen Akku / ein Modell (bei *Vorgänge*: springt
-  ins Akku-Feld), Entf löscht.
-- **Löschen**: Rechtsklick (oder Entf) auf Vorgänge, Akkus oder Modelle (Strg / Umschalt wählt mehrere). Gelöschte Einträge werden
-  nur ausgeblendet; in den *Einstellungen* lassen sie sich wieder anzeigen (grau) – erneutes Löschen entfernt sie
-  endgültig.
 
-- **Profile (SkyRC MC5000)**: Der Tab *Profile* speichert Ladeprogramme – Akkutyp, Vorgang (Laden, Entladen,
-  Zyklus …), Ströme, Kapazitätsgrenze, Spannungen, Zyklen und ihre Reihenfolge, Pausen. Jeder Wert wird aus den
-  Stufen gewählt, die die SkyRC-App anbietet (z. B. Ströme in 50-mA-Schritten, Nachladen bei NiMH aus oder ab
-  1,30 V); ein anderer Akkutyp, Vorgang oder Eneloop-Typ (Std / Pro / Lite / Plus AA, AAA, C, D) setzt die Vorgaben
-  der App dafür. *Neu* und *Kopieren* öffnen das Profil in einem eigenen Fenster. Ein MC5000 (per Bluetooth
-  oder über ein BattBench-ESP verbunden) bekommt rechts neben seinen Kacheln die *Ladegerätsteuerung*: Kachel
-  anklicken wählt ihren Schacht, Strg + Klick mehrere; das Feld zeigt, was dort mit welchem Programm läuft (und
-  welches gespeicherte Profil das ist), startet das gewählte Profil auf den gewählten Schächten und stoppt sie.
-  *Aktuelle Einstellungen* in der Profilliste startet jeden Schacht neu mit seinen eigenen Einstellungen. Der Knopf
-  *Profil* enthält die Profilaktionen: *Neu aus
-  aktuellen Einstellungen …* öffnet ein neues Profil mit den aktuellen Einstellungen des Schachts als Vorlage, *Neu …*
-  eines mit den Vorgaben der App (wie im Tab *Profile*); *Bearbeiten …* bearbeitet das
-  gewählte Profil (*Klonen* speichert es als neues) – bei *Aktuelle Einstellungen* ändert es sie nur für den nächsten
-  Start (*Verwenden*), oder *Neues Profil erstellen* speichert sie. Das Ladegerät kann
-  sein Programm nicht vollständig melden: BattBench kennt es bei Vorgängen, die es selbst gestartet hat; sonst zeigt
-  es Akkutyp, Vorgang und den Lade-/Entladestrom, den das Ladegerät meldet (in Schritten von 0,1 A), und die
-  passenden Profile. Dasselbe steht im Rechtsklick-Menü eines Schachts. Das Zahnrad in der Titelzeile öffnet die
-  Einstellungen des Ladegeräts (Tastenton, Benachrichtigungston, Abschlusston, LCD-Licht, Bildschirm-Timeout):
-  vom Gerät gelesen und dorthin gespeichert. Darunter die **Bluetooth-Verbindung**: Das Ladegerät nimmt nur eine an;
-  für die SkyRC-App geben *5 min pausieren* oder *Ausschalten* es frei (für BattBenchs eigenes Bluetooth und jedes
-  BattBench-ESP zugleich; ausgeschaltet bleibt auch nach einem Neustart aus), *Einschalten* verbindet wieder; über
-  ein BattBench-ESP öffnet der Dialog auch dessen Webseite. Solange Bluetooth pausiert oder aus ist, steht das auf den
-  Kacheln (bei einer Pause mit der Restzeit und einem Knopf zum Fortsetzen) statt „Ladegerät offline“; das Zahnrad
-  geht dann trotzdem. Eine Pause von der Webseite des ESP erscheint hier ebenso. Wie BattBench SkyRC-Ladegeräte
-  verbindet, steht im Reiter „+“ (*SkyRC-Ladegeräte verbinden*): *Automatisch* wechselt zu *Nur über ein
-  BattBench-ESP*, sobald einmal eines verbunden war; dann lässt das Bluetooth dieses PCs sie in Ruhe.
-  Nur dabei schickt BattBench etwas, das ändert, was ein Ladegerät tut, und erst nach deiner Bestätigung. Ein
-  Vorgang in einem angekreuzten Schacht wird ersetzt und beginnt von vorn.
+#### Ladegeräte-Reiter und Kacheln
+- **Reiter** oben: Name, Eingangsspannung, Verbindungssymbol und eine LED pro Schacht – grau leer, orange bereit
+  (Akku eingelegt, kein Vorgang), gelb lädt, rot entlädt, blau Analyse/Aktivierung/Zyklus, grün fertig, rot blinkend
+  Fehler. Der Reiter „+“ zeigt die unterstützten Ladegeräte und die Verbindungseinstellungen.
+- **Kacheln**: Werte und Zustand jedes Schachts. Ein Klick auf eine Kachel zeigt ihren Vorgang und, wenn ein Akku
+  zugeordnet ist, seinen Verlauf.
+- **Offline**: Ist ein Ladegerät abgesteckt oder 30 Sekunden still, liegt ein roter Hinweis über seinen Kacheln.
+  BattBench versucht es weiter, und der Hinweis verschwindet von selbst; bleibt er, das USB-Kabel neu einstecken.
+
+#### Diagramm
+- Maus auf eine Kurve, einen Legenden-Eintrag oder eine Achse hebt den Wert hervor; ein Klick auf Legende oder Achse
+  blendet ihn aus oder ein.
+- Ein Klick auf eine farbige Phase (oder eine Zeile der Phasenliste) zeigt nur diese Phase; ein weiterer Klick wieder
+  alles.
+- Rahmen ziehen zoomt hinein, Rechtsklick zoomt heraus, das Haus-Symbol (unten links) zeigt alles.
+- Die letzte Entladung zeigt ihr Plateau (20–80 %) dunkler, die mittlere Spannung dort (gestrichelt) und die Spannung
+  nach 5 % (Punkt).
+- Wo Messwerte fehlen, reißen die Kurven ab. Bei einem laufenden MC5000-Vorgang füllt der Spannungsverlauf, den das
+  Gerät von der aktuellen Phase speichert, die Lücke (gestrichelt, nur Spannung).
+
+#### Tabellen
+- Klick auf einen Spaltentitel sortiert; der Trichter im Spaltentitel filtert wie in einer Tabellenkalkulation.
+- *Vorgänge* zeigt alle Vorgänge, *Akkus* deine Akkus mit ihrem Verlauf, *Modelle* die Modellliste, *Ladegeräte* die
+  bekannten Ladegeräte (hier umbenennen).
+- Enter bearbeitet, Entf löscht (Strg / Umschalt wählt mehrere). Gelöschte Einträge sind nur ausgeblendet –
+  *Einstellungen* zeigt sie wieder, nochmal löschen entfernt sie endgültig.
+
+#### Berichte
+*Bericht exportieren …* (Knopf über der Bewertung, oder Rechtsklick auf einen Vorgang): Bewertung, Akku, Ladegerät,
+Diagramm, Details, ein Diagramm für jede Lade-/Entladephase und die Erläuterungen der Werte – als HTML-Seite oder PDF
+(DIN A4), in der Sprache der App oder einer anderen.
+
+#### Profile und Ladegerätsteuerung (SkyRC MC5000)
+1. **Profil anlegen** im Reiter *Profile* mit *Neu*: Akkutyp, Vorgang (Laden, Entladen, Zyklus …), Ströme, Grenzen.
+   Jeder Wert kommt aus den Stufen der SkyRC-App, ein neuer Typ oder Vorgang setzt dessen Vorgaben. Oder einen
+   laufenden Schacht als Vorlage nehmen: *Profil → Neu aus aktuellen Einstellungen* in der Ladegerätsteuerung.
+2. **Schächte wählen**: Kachel anklicken; für mehrere Strg + Klick auf Kacheln oder die Schacht-Nummern im Feld
+   *Ladegerätsteuerung* anklicken.
+3. **Starten oder stoppen**: Profil im Feld wählen und *Start* drücken – oder *Aktuelle Einstellungen*, um die
+   Schächte mit ihrem eigenen Programm neu zu starten – oder *Stoppen*. BattBench fragt vorher; ein laufender Vorgang
+   im Schacht wird ersetzt und beginnt von vorn.
+
+- Das Feld zeigt, was in den gewählten Schächten mit welchem Profil läuft. Bei Vorgängen, die BattBench nicht selbst
+  gestartet hat, zeigt es, was das Ladegerät meldet (Typ, Vorgang, Ströme), und die passenden Profile.
+- Das Zahnrad im Feld öffnet die Einstellungen des Ladegeräts (Töne, Licht, Bildschirm-Timeout) und seine
+  **Bluetooth-Verbindung**: Das Gerät nimmt nur eine Verbindung an, *5 min pausieren* oder *Ausschalten* geben es für
+  die SkyRC-App frei, *Einschalten* verbindet wieder – für diesen PC und ein BattBench-ESP zugleich. Eine Pause steht
+  mit Restzeit und *Jetzt fortsetzen* auf den Kacheln.
+- Wie SkyRC-Ladegeräte verbunden werden, steht im Reiter „+“ (*SkyRC-Ladegeräte verbinden*): automatisch, nur über
+  ein BattBench-ESP oder nur über Bluetooth dieses PCs.
+- Profile starten und stoppen ist das einzige, womit BattBench ändert, was ein Ladegerät tut, und nur nach deiner
+  Bestätigung.
 
 ### Unterstützte Ladegeräte
-| Ladegerät | Verbindung | Schächte | Getestet |
-|---|---|---|---|
-| ISDT **N8** | USB | 8 | ✔ |
-| ISDT **A4 Air** | Bluetooth (empfohlen) oder USB | 4 | ✔ |
-| ISDT N16 / N24 | USB | 16 / 24 | – |
-| ISDT C4, C4 EVO, A4, UC4 | USB | 4 | – |
-| ISDT A8 Air, C4 Air | Bluetooth | 8 / 6 | – |
-| SkyRC MC3000, MC5000 | Bluetooth | 4 | – |
+| Ladegerät | Schächte | Stromversorgung | Datenverbindung | Entladen / Analyse | Getestet |
+|---|---|---|---|---|---|
+| ISDT **N8** | 8 | USB-C – vom PC zu wenig, siehe *Stromversorgung* | USB | ja | ✔ |
+| ISDT **A4 Air** | 4 | USB-C (ältere Modelle: Micro-USB) – vom PC zu wenig, siehe *Stromversorgung* | Bluetooth (empfohlen) oder USB | nein | ✔ |
+| SkyRC **MC5000** | 4 | Netz | Bluetooth des PCs oder ein BattBench-ESP | ja | ✔ |
+| SkyRC MC3000 | 4 | DC | Bluetooth des PCs oder ein BattBench-ESP | ja | – |
+| ISDT N16 / N24 | 16 / 24 | DC | USB | ja | – |
+| ISDT C4 | 4 | DC | USB | ja | – |
+| ISDT C4 Air | 6 | USB-C – vom PC zu wenig, siehe *Stromversorgung* | Bluetooth | nein | – |
+| ISDT C4 EVO | 4 | USB-C – vom PC zu wenig, siehe *Stromversorgung* | USB | ja | – |
+| ISDT UC4 | 4 | siehe Anleitung des Ladegeräts | USB | ja | – |
+| ISDT A8 Air | 8 | USB-C (ältere Modelle: Micro-USB) – vom PC zu wenig, siehe *Stromversorgung* | Bluetooth | nein | – |
 
 Mit „–“ markierte Ladegeräte werden laut Protokoll unterstützt, wurden aber noch nicht am echten Gerät ausprobiert.
+
+Ein **BattBench-ESP** (https://github.com/fashberg/battbench-esp) neben einem SkyRC-Ladegerät hält dessen Bluetooth-Verbindung und puffert die Messwerte,
+solange BattBench nicht läuft; BattBench holt sie beim Start ab.
 
 ### Deine Daten
 Alle Messwerte, Vorgänge, Akkus und Modelle liegen in einer Datenbankdatei (SQLite) auf deinem Rechner, normalerweise

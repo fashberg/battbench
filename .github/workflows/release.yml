@@ -1,0 +1,65 @@
+# Release: a pushed tag v<version> (made by packaging/release.py on main) builds the Windows installer and publishes
+# it as a GitHub release; the notes are the release commit's message plus the install text.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Version must match the tag
+        shell: pwsh
+        run: |
+          $version = python -c 'import battbench; print(battbench.__version__)'
+          if ("v$version" -ne "${{ github.ref_name }}") { throw "battbench/__init__.py has $version, the tag is ${{ github.ref_name }}" }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Python environment (.venv, as build.ps1 expects it)
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python -m pip install --quiet --upgrade pip
+          .venv\Scripts\python -m pip install --quiet -r requirements.txt
+
+      - name: NSIS
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue) -and
+              -not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) { choco install nsis -y --no-progress }
+
+      - name: Build the installer
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File packaging\build.ps1
+
+      - name: Release notes
+        shell: pwsh
+        run: |
+          $body = git log -1 --format=%b | Where-Object { $_ -notmatch '^Co-Authored-By:' }
+          @(
+            $body
+            ''
+            '### Install'
+            "Download ``BattBench-$env:VERSION-setup.exe`` below and run it. It installs for the current user (no administrator rights), adds a Start menu entry and keeps your data in ``%LOCALAPPDATA%\BattBench``."
+            ''
+            'The installer is not code-signed, so Windows SmartScreen may warn on first start ("More info" → "Run anyway").'
+          ) | Out-File -Encoding utf8 notes.md
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" "build\BattBench-$env:VERSION-setup.exe" `
+            --title "BattBench $env:VERSION" --notes-file notes.md

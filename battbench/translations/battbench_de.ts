@@ -508,6 +508,10 @@
         <translation>Status (lädt / entlädt / Pause / fertig / Fehler), Betriebsart, Akkutyp, Spannung, Strom, mAh, Zeit, Temperatur, Innenwiderstand. MC5000: Start / Stopp mit Profilen, Geräteeinstellungen, Bluetooth-Pause (über Bluetooth oder ein BattBench-ESP). MC3000: nur lesen.</translation>
     </message>
     <message>
+        <source>&lt;b&gt;Bluetooth charger not found?&lt;/b&gt; Quit the app on your phone – &lt;b&gt;ISD Link&lt;/b&gt; for ISDT Air chargers, the &lt;b&gt;SkyRC&lt;/b&gt; app for the MC3000 / MC5000 – or switch off Bluetooth on the phone. A charger accepts only one Bluetooth connection and cannot be seen by others while the phone is connected. In turn, the app cannot reach it while BattBench or a BattBench-ESP is connected.</source>
+        <translation>&lt;b&gt;Bluetooth-Ladegerät wird nicht gefunden?&lt;/b&gt; Die App auf dem Handy beenden – &lt;b&gt;ISD Link&lt;/b&gt; bei ISDT-Air-Ladegeräten, die &lt;b&gt;SkyRC&lt;/b&gt;-App beim MC3000 / MC5000 – oder am Handy Bluetooth ausschalten. Ein Ladegerät nimmt nur eine Bluetooth-Verbindung an und ist für andere unsichtbar, solange das Handy verbunden ist. Umgekehrt kommt die App nicht dran, solange BattBench oder ein BattBench-ESP verbunden ist.</translation>
+    </message>
+    <message>
         <source>Connect SkyRC chargers:</source>
         <translation>SkyRC-Ladegeräte verbinden:</translation>
     </message>
@@ -554,10 +558,6 @@
     <message>
         <source>Charger control</source>
         <translation>Ladegerätsteuerung</translation>
-    </message>
-    <message>
-        <source>Slot {} (click a tile, Ctrl + click for several)</source>
-        <translation>Schacht {} (Kachel anklicken, Strg + Klick für mehrere)</translation>
     </message>
     <message>
         <source>Create new from current settings …</source>
@@ -614,10 +614,6 @@
     <message>
         <source>Different settings – choose only one slot to see them.</source>
         <translation>Unterschiedliche Einstellungen – nur einen Schacht wählen, um sie zu sehen.</translation>
-    </message>
-    <message>
-        <source>Click a slot tile (Ctrl + click for several).</source>
-        <translation>Schacht-Kachel anklicken (Strg + Klick für mehrere).</translation>
     </message>
     <message>
         <source>Bluetooth connection</source>
@@ -1156,10 +1152,6 @@
         <translation>Jetzt suchen</translation>
     </message>
     <message>
-        <source>&lt;b&gt;Air charger not found?&lt;/b&gt; Quit the &lt;b&gt;ISD Link&lt;/b&gt; app on your phone (or switch off Bluetooth on the phone). The charger accepts only one Bluetooth connection and cannot be seen by others while the phone is connected. In turn, ISD Link cannot reach it while BattBench is connected.</source>
-        <translation>&lt;b&gt;Air-Ladegerät wird nicht gefunden?&lt;/b&gt; Die App &lt;b&gt;„ISD Link“&lt;/b&gt; auf dem Handy beenden (oder am Handy Bluetooth ausschalten). Das Ladegerät nimmt nur eine Bluetooth-Verbindung an und ist für andere unsichtbar, solange das Handy verbunden ist. Umgekehrt kommt ISD Link nicht dran, solange BattBench verbunden ist.</translation>
-    </message>
-    <message>
         <source>takes effect after a restart</source>
         <translation>gilt nach einem Neustart</translation>
     </message>
@@ -1604,6 +1596,14 @@
         <translation>getrennt</translation>
     </message>
     <message>
+        <source>Slot {}: a click chooses it, another click leaves it out again</source>
+        <translation>Schacht {}: ein Klick wählt ihn, ein weiterer Klick nimmt ihn wieder heraus</translation>
+    </message>
+    <message>
+        <source>Choose a slot: click its tile or its number above.</source>
+        <translation>Schacht wählen: seine Kachel oder oben seine Nummer anklicken.</translation>
+    </message>
+    <message>
         <source>Export report</source>
         <translation>Bericht exportieren</translation>
     </message>
@@ -1622,6 +1622,10 @@
     <message>
         <source>Export …</source>
         <translation>Exportieren …</translation>
+    </message>
+    <message>
+        <source>Click: show this slot and choose it in the charger control; Ctrl + click: choose several slots there</source>
+        <translation>Klick: diesen Schacht anzeigen und in der Ladegerätsteuerung wählen; Strg + Klick: dort mehrere Schächte wählen</translation>
     </message>
     <message>
         <source>Slot {}: no data</source>
