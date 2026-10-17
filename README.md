@@ -167,8 +167,10 @@ a BattBench-ESP).
 ### Measuring
 1. Insert the battery and start a task on the charger. A capacity is measured by **analysis** (charge – discharge –
    charge), **discharge** or **cycle**; a plain charge gives no capacity.
-2. Click the slot tile: the chart and the result panel show the running session.
-3. In the result panel choose the **battery** (or first the model to narrow the list). Every change is saved at once.
+2. Click the slot tile (or move with the arrow keys Left / Right: the cursor then is in the model search, or in the
+   battery field if the slot has a battery): the chart and the result panel show the running session.
+3. In the result panel choose the **battery** (or first the model to narrow the list); its number and Enter pick it
+   directly (“32” → #32, also typed into the model search). Every change is saved at once.
    Without a battery, pick a model or type the **nominal capacity** (suggestions 500–3000 mAh, any value can be
    typed). A **note** (e.g. “new contacts”) is kept with the session and shown in the session lists.
 4. When the discharge is over, the session is rated. While it is still running the panel shows e.g.
@@ -187,6 +189,10 @@ The N8 does not tell AA from AAA, so its sessions are only rated once a battery,
   end.
 - **Temperature** – the highest temperature of the session. NiMH cells get warm towards the end of charging; above
   about 45 °C the cell is stressed.
+- **Program** – MC5000: the profile the task ran with and all its values (currents first). Started on the charger
+  itself, only battery type, task and the currents (in steps of 100 mA) are known.
+- **Average current** – while charging and while discharging, worked out from the readings (pauses and rests left
+  out); for the chargers without profiles this is how the currents of a session are kept.
 - **Status** – *running* (with *charging* / *discharging*), *done*, *removed* (taken out before the end) or *aborted*
   (stopped, replaced by another task, or the data broke off).
 
@@ -275,6 +281,9 @@ MC3000 and Maha MH-C9000.
   The "+" tab lists the supported chargers and the connection settings.
 - **Tiles**: values and state of each slot. Click a tile to see its session and, if a battery is assigned, its
   history.
+- **Battery before the start**: click a slot without a session and choose the battery – the next session in that slot
+  gets it (tile title *Slot 4 → #5*). A task stopped and started again (or the next task) keeps the battery of the
+  session before as long as the slot was not empty in between.
 - **Offline**: a charger that is unplugged or silent for 30 seconds is covered by a red notice. BattBench keeps trying
   and the notice goes away by itself; if it stays, plug the USB cable in again.
 
@@ -337,7 +346,8 @@ the app's language or another one.
 Chargers marked “–” are supported by protocol but have not been tried on real hardware yet.
 
 A **BattBench-ESP** (https://github.com/fashberg/battbench-esp) next to a SkyRC charger keeps its Bluetooth connection and buffers the readings while
-BattBench is not running; BattBench fetches them when it starts.
+BattBench is not running; BattBench fetches them when it starts. Until it has caught up, a notice over the
+slots shows how far (percent and the time reached): the slots show that time, not the present.
 
 ### Your data
 All readings, sessions, batteries and models are stored in one database file (SQLite) on your computer, normally

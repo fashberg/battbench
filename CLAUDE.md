@@ -73,13 +73,14 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
   running task (`self.gaps`), `_fill_gaps` asks for the curve (`mc5000.parse_history` / `history_points`, last value
   = now) and stores the values inside the gaps in the table `history` (`DB.add_history`) – never as readings, they
   have no current / mAh / mode. `CurvePlot` draws them dashed (`hist`), its curves break at gaps over `GAP_BREAK`.
-- **DB upgrades** in `DB.__init__` via `PRAGMA user_version` (currently 14): 1 N8 size "AA/AAA", 2 N8 mode 9/10 →
+- **DB upgrades** in `DB.__init__` via `PRAGMA user_version` (currently 15): 1 N8 size "AA/AAA", 2 N8 mode 9/10 →
   13/14, 3 drop sessions < 10 s, 4 German stored values → English, 5 / 6 soft delete, 8 thin readings
   (`thin_samples`; 7 was an unreleased first try), 10 drop glitch phases of a single reading and re-rate all
   sessions (poor resistance caps at good; 9 unreleased), 11 health index columns (`_health_columns`), 12 `sessions.ohi`
   (the index itself, tables show and sort by it), 13 `sessions.stop_reason` (error a charger stopped the task with;
   such sessions end as "aborted", not "removed"), 14 MC5000 idle readings with an error → mode 20 from their raw answer
-  (`_skyrc_stops`); "contact lost" counts as removed.
+  (`_skyrc_stops`); "contact lost" counts as removed. 15 `sessions.avg_charge_ma / avg_discharge_ma` (from the readings)
+  and `sessions.profile`.
   New upgrade = next number, own method.
 - **Rating** = NiMH health index (`model.health`, explained in the README section *Rating*): scores for capacity,
   resistance (charger scale = `RES_LIMITS`), voltage under load and charge efficiency, weighted 40/30/20/10, missing
@@ -90,6 +91,17 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
 - **Mode ids**: the N8 reports activation as 9/10; `device.N8_MODES` maps it to 13/14 when reading (9 stays "cycle" for
   SkyRC / A4). Analysis = 11 throughout, the phase follows the sign of the current.
 - Sessions shorter than `MIN_SECS` (10 s) are not stored (`DB.save_dirty`).
+- **Battery of a new session** (`DB.save_session` on insert): a battery planned for the slot (`DB.plan_battery`,
+  settings `plan_<dev>_<slot>`, chosen in the result panel of a slot without a session) if chosen before the start,
+  else the battery and nominal capacity of the slot's session before (`Session.follows`, set by `Tracker`) unless the
+  slot was empty for `EMPTY_SECS` in between or the readings have a gap. `save_dirty` stores closed sessions first;
+  `resume` repeats the take-over after restoring the stored batteries.
+- **Average currents** (`model.CurrentAverage`): time-weighted, each reading counts until the next (at most
+  `CURRENT_DT`), |current| below `PHASE_MIN_MA` left out – live and thinned readings give the same value.
+- **Program of a session** (`sessions.profile`, JSON `prog` / `pid` / `source`): `Worker._find_profiles` once per MC5000
+  session after `PROFILE_SECS` asks the read-only `5F` and takes the program BattBench started on the slot (setting
+  `mc5000:<dev>:<slot>`) if status and currents still match it, else what the charger reports (`source` 'charger').
+  Shown by `session_profile_text` (result panel, so also the report).
 - **Offline**: the worker keeps `last_ok` per connection (reader); none for `STALE_SECS` -> `online[dev]['stale']`
   = time of the last reading, the GUI covers the tiles (`TilePage.set_offline`). A USB reader posts empty batches
   while the charger is silent and calls `Charger.reopen()` every `Reader.REOPEN_SECS`; only an exception while the
@@ -105,7 +117,8 @@ detects sessions and tracks batteries. User docs: `README.md`; protocol details:
   starts by itself when a battery is in), one slot per packet, only after the user confirmed a start or stop in
   the dialog; never mask `00` (all slots). Success is checked on the status, not the answer. Over a BattBench-ESP
   they go through `POST /api/command`, which lets only `94` / `FE` / `98` / `5F` / `96` / `95` with a one-slot mask
-  through. Read only and sent without asking: `5F` (currents of the slots chosen in the control panel), `96` (system
+  through. Read only and sent without asking: `5F` (currents of the slots chosen in the control panel, and once per new
+  session for its program), `96` (system
   settings when their dialog opens); `95` only from that dialog's Save. The same dialog pauses / switches off / on
   the charger's Bluetooth (worker command `bt`): `BleManager.hold_charger` (switched off: setting `bt_off`) and
   `POST /api/ble` on every BattBench-ESP that knows the charger's address – both, or the other one takes it.

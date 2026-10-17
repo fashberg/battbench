@@ -4,7 +4,10 @@ it missed while it was not running.
 
   GET /api/info                     -> logid, now (ESP clock, 0 = not set), src (charger index), chargers
                                        [{src, model, addr}]
-  GET /api/records?since=N&max=M    -> {logid, more, records: [[seq, unix time or null, src, slot, packet hex], ...]}
+  GET /api/records?since=N&max=M    -> {logid, seq_next, more, records: [[seq, unix time or null, src, slot, packet
+                                       hex], ...]}, deflated if asked for (firmware 2026.10.3 on, ~5 times smaller)
+      &fmt=bin                      -> the same, binary and delta coded (firmware 2026.10.4 on, see decode_records);
+                                       older firmware ignores it and answers JSON
   POST /api/time {"t": unix}        -> sets the ESP clock if it has none (no internet for SNTP)
 
 Sequence numbers only grow; the newest one stored is kept in the database per log id (setting 'esp:<logid>'),
@@ -16,6 +19,7 @@ import struct
 import threading
 import time
 import urllib.request
+import zlib
 from typing import Dict, Optional
 
 from . import device_skyrc as skyrc
@@ -24,13 +28,70 @@ from .i18n import tr
 
 POLL_SECS = 2.0
 TIMEOUT = 5
+RECORDS_TIMEOUT = 20      # s: a batch of readings takes a few seconds while Bluetooth shares the radio
 LOST_SECS = 300           # a charger no longer behind the ESP: its connection ends after this long without readings
 BLE_SECS = 10             # how often the ESP's Bluetooth state (paused / off) is asked for
-BATCH = 1000
+BATCH = 5000              # readings per request (older firmware sends at most 1000)
 
 
 def cursor_key(logid):
     return f'esp:{logid}'
+
+
+def _varint(data, off):
+    v = shift = 0
+    while True:
+        b = data[off]
+        off += 1
+        v |= (b & 0x7F) << shift
+        if not b & 0x80:
+            return v, off
+        shift += 7
+
+
+def decode_records(data):
+    """Binary answer of /api/records?fmt=bin -> the same dict as the JSON answer, packets as bytes.
+    Little endian: header "BBR1", u32 log id, u32 seq_next, u8 more, u32 count; then segments: 0x80, u16 boot,
+    u8 clock known, i64 offset (unix time - uptime, 0.1 s), u32 seq, u32 uptime (0.1 s) as the base, followed by
+    records; 0xFF ends it. Record: tag 0 F SSS LLL (F = full packet, S = charger index, L = slot), varint seq step,
+    varint uptime step; full: length + packet; else a bit mask of the bytes changed against the previous packet of
+    that slot (LSB first) + those bytes."""
+    if data[:4] != b'BBR1':
+        raise ValueError('not a BattBench-ESP record answer')
+    logid, seq_next, more, _count = struct.unpack_from('<IIBI', data, 4)
+    off, seq, up, off10, prev, recs = 17, 0, 0, None, {}, []
+    while off < len(data):
+        tag = data[off]
+        off += 1
+        if tag == 0xFF:
+            break
+        if tag == 0x80:
+            _boot, known, o10, seq, up = struct.unpack_from('<HBqII', data, off)
+            off += 19
+            off10, prev = (o10 if known else None), {}
+            continue
+        if tag & 0x80:
+            raise ValueError(f'unknown tag {tag:#x}')
+        d_seq, off = _varint(data, off)
+        d_up, off = _varint(data, off)
+        key = (tag >> 3 & 7, tag & 7)
+        if tag & 0x40:
+            n = data[off]
+            packet = bytearray(data[off + 1:off + 1 + n])
+            off += 1 + n
+        else:
+            packet = bytearray(prev[key])
+            mask = data[off:off + (len(packet) + 7) // 8]
+            off += len(mask)
+            for i in range(len(packet)):
+                if mask[i >> 3] >> (i & 7) & 1:
+                    packet[i] = data[off]
+                    off += 1
+        prev[key] = packet
+        seq += d_seq
+        up += d_up
+        recs.append([seq, round((off10 + up) / 10, 1) if off10 is not None else None, key[0], key[1], bytes(packet)])
+    return dict(logid=f'{logid:08x}', seq_next=seq_next, more=bool(more), records=recs)
 
 
 class NetReader:
@@ -72,14 +133,22 @@ class NetHost(threading.Thread):
         self.auto = False                   # found by mDNS (not entered by hand)
         self.state = tr('connecting …')
         self.backlog = 0                  # readings fetched in the last round (> BATCH: catching up)
+        self.catchup: Optional[dict] = None   # while catching up: dict(first, done, total, t) (sequence numbers,
+        #                                       time of the newest reading fetched)
         self.ble: Optional[dict] = None   # Bluetooth part of /api/status (state, on, paused_secs) and t = asked at
 
     def stop(self):
         self.running = False
 
-    def _get(self, path):
-        with urllib.request.urlopen(self.base + path, timeout=TIMEOUT) as f:
-            return json.loads(f.read().decode())
+    def _get(self, path, timeout=TIMEOUT):
+        req = urllib.request.Request(self.base + path, headers={'Accept-Encoding': 'deflate'})
+        with urllib.request.urlopen(req, timeout=timeout) as f:
+            data = f.read()
+            if f.headers.get('Content-Encoding') == 'deflate':
+                data = zlib.decompress(data)
+            if f.headers.get_content_type() == 'application/octet-stream':
+                return decode_records(data)
+            return json.loads(data.decode())
 
     def _post(self, path, data):
         req = urllib.request.Request(self.base + path, data=json.dumps(data).encode(),
@@ -114,7 +183,7 @@ class NetHost(threading.Thread):
                 self.info = None
                 for r in self.readers.values():
                     self.out.put(('data', r, [], None))
-            if self.backlog < BATCH:
+            if not self.backlog:                        # catching up: the next batch at once
                 end = t0 + POLL_SECS
                 while self.running and time.time() < end:
                     time.sleep(0.1)
@@ -144,6 +213,25 @@ class NetHost(threading.Thread):
         self.ble = dict(b, t=time.time())
         return b
 
+    def _note_catchup(self, d, since, last):
+        """Progress while catching up: from the first round with more readings than one request takes up to the
+        first round without."""
+        if not d.get('more'):
+            self.catchup = None
+            return
+        c = self.catchup or dict(first=since, t=None)
+        c['done'], c['total'] = last - c['first'], max(1, d.get('seq_next', last + 1) - 1 - c['first'])
+        ts = [r[1] for r in d['records'] if r[1] is not None]
+        c['t'] = ts[-1] if ts else c['t']
+        self.catchup = c
+
+    def progress(self, dev):
+        """(percent, time of the newest reading fetched) while catching up with readings of device dev, else None."""
+        c = self.catchup
+        if not c or not any(r.dev == dev for r in self.readers.values()):
+            return None
+        return min(99, int(100 * c['done'] / c['total'])), c['t']
+
     def _round(self):
         self.info = info = self._get('/api/info')
         if not self.ble or time.time() - self.ble['t'] >= BLE_SECS:
@@ -158,12 +246,12 @@ class NetHost(threading.Thread):
         if info.get('connected') and info.get('src', -1) >= 0:
             self._reader(info['src'])                       # shown as connected even before its first reading
         since = self.cursors.get(key, 0)
-        d = self._get(f'/api/records?since={since}&max={BATCH}')
+        d = self._get(f'/api/records?since={since}&max={BATCH}&fmt=bin', RECORDS_TIMEOUT)
         if d['logid'] != info['logid']:
             return                                          # cleared in between
         batches: Dict[int, list] = {}
         last = since
-        for seq, t, src, slot, hexdata in d['records']:
+        for seq, t, src, slot, packet in d['records']:
             if t is None:
                 if not info.get('now'):
                     break               # wait until the clock is set, then these readings get their time
@@ -173,12 +261,13 @@ class NetHost(threading.Thread):
             if r is None:
                 last = seq
                 continue
-            s = r.charger.sample(slot, bytes.fromhex(hexdata), r.dev)
+            s = r.charger.sample(slot, bytes.fromhex(packet) if isinstance(packet, str) else packet, r.dev)
             if s:
                 s.t = t
                 batches.setdefault(src, []).append(s)
             last = seq
         self.backlog = len(d['records']) if d.get('more') else 0
+        self._note_catchup(d, since, last)
         n = sum(len(b) for b in batches.values())
         now = time.time()
         for src, r in list(self.readers.items()):

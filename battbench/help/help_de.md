@@ -43,11 +43,12 @@ oder ein BattBench-ESP).
 ### Messen
 1. Akku einlegen und am Ladegerät eine Aufgabe starten. Eine Kapazität messen **Analyse** (laden – entladen – laden),
    **Entladen** und **Zyklus**; reines Laden ergibt keine Kapazität.
-2. Auf die Schacht-Kachel klicken: Diagramm und Ergebnis-Bereich zeigen den laufenden Vorgang.
-3. Im Ergebnis-Bereich den **Akku** wählen (oder zuerst das Modell, um die Liste einzugrenzen). Jede Änderung wird
-   sofort gespeichert. Ohne Akku ein Modell wählen oder die **Nennkapazität** eintragen (Vorschläge 500–3000 mAh,
-   jeder Wert kann eingetippt werden). Eine **Notiz** (z. B. „neue Kontakte“) bleibt beim Vorgang und steht in den
-   Vorgangslisten.
+2. Auf die Schacht-Kachel klicken (oder mit den Pfeiltasten Links / Rechts wechseln: der Cursor steht dann in der
+   Modellsuche, bei einem Schacht mit Akku im Akku-Feld): Diagramm und Ergebnis-Bereich zeigen den laufenden Vorgang.
+3. Im Ergebnis-Bereich den **Akku** wählen (oder zuerst das Modell, um die Liste einzugrenzen); seine Nummer und
+   Enter wählen ihn direkt („32“ → #32, auch in der Modellsuche getippt). Jede Änderung wird sofort gespeichert.
+   Ohne Akku ein Modell wählen oder die **Nennkapazität** eintragen (Vorschläge 500–3000 mAh, jeder Wert kann
+   eingetippt werden). Eine **Notiz** (z. B. „neue Kontakte“) bleibt beim Vorgang und steht in den Vorgangslisten.
 4. Ist die Entladung vorbei, wird der Vorgang bewertet. Solange sie läuft, zeigt der Bereich z. B. „Analyse läuft“.
 
 Der N8 unterscheidet AA und AAA nicht; seine Vorgänge werden deshalb erst bewertet, wenn Akku, Modell oder
@@ -64,6 +65,10 @@ Nennkapazität gesetzt sind.
   Werte an Anfang und Ende.
 - **Temperatur** – die höchste Temperatur des Vorgangs. NiMH-Akkus werden gegen Ende des Ladens warm; ab etwa 45 °C
   wird der Akku belastet.
+- **Programm** – MC5000: das Profil, mit dem der Vorgang lief, mit allen Werten (die Ströme zuerst). Am Ladegerät
+  selbst gestartet, sind nur Akkutyp, Vorgang und die Ströme (in 100-mA-Schritten) bekannt.
+- **Mittlerer Strom** – beim Laden und beim Entladen, aus den Messwerten berechnet (Pausen und Ruhezeiten nicht
+  mitgezählt); bei Ladegeräten ohne Profile sind das die Ströme des Vorgangs.
 - **Status** – *läuft* (mit *lädt* / *entlädt*), *fertig*, *entnommen* (vor dem Ende herausgenommen) oder
   *abgebrochen* (gestoppt, durch eine andere Aufgabe ersetzt oder die Daten brachen ab).
 
@@ -153,6 +158,9 @@ MC3000 und Maha MH-C9000.
   Fehler. Der Reiter „+“ zeigt die unterstützten Ladegeräte und die Verbindungseinstellungen.
 - **Kacheln**: Werte und Zustand jedes Schachts. Ein Klick auf eine Kachel zeigt ihren Vorgang und, wenn ein Akku
   zugeordnet ist, seinen Verlauf.
+- **Akku vor dem Start**: Schacht ohne Vorgang anklicken und den Akku wählen – der nächste Vorgang in diesem Schacht
+  bekommt ihn (Kachel-Titel *Slot 4 → #5*). Ein gestoppter und neu gestarteter (oder der nächste) Vorgang behält den
+  Akku des Vorgangs davor, solange der Schacht dazwischen nicht leer war.
 - **Offline**: Ist ein Ladegerät abgesteckt oder 30 Sekunden still, liegt ein roter Hinweis über seinen Kacheln.
   BattBench versucht es weiter, und der Hinweis verschwindet von selbst; bleibt er, das USB-Kabel neu einstecken.
 
@@ -217,7 +225,8 @@ Diagramm, Details, ein Diagramm für jede Lade-/Entladephase und die Erläuterun
 Mit „–“ markierte Ladegeräte werden laut Protokoll unterstützt, wurden aber noch nicht am echten Gerät ausprobiert.
 
 Ein **BattBench-ESP** (https://github.com/fashberg/battbench-esp) neben einem SkyRC-Ladegerät hält dessen Bluetooth-Verbindung und puffert die Messwerte,
-solange BattBench nicht läuft; BattBench holt sie beim Start ab.
+solange BattBench nicht läuft; BattBench holt sie beim Start ab. Bis es aufgeholt hat, zeigt ein Hinweis über den
+Schächten den Stand (Prozent und erreichte Uhrzeit): Die Schächte zeigen diesen Zeitpunkt, nicht die Gegenwart.
 
 ### Deine Daten
 Alle Messwerte, Vorgänge, Akkus und Modelle liegen in einer Datenbankdatei (SQLite) auf deinem Rechner, normalerweise

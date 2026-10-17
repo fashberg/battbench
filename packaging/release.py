@@ -39,10 +39,16 @@ def suggest():
 
 
 def changes(version):
-    """Subjects of the devel commits since the last release commit on devel (oldest first); a commit for this same
-    version (left by a release that was not finished) does not count as one."""
-    last = next((h for h, s in (line.split(' ', 1) for line in git(
-        'log', WORK, '--format=%H %s', '--grep=^Release [0-9]').splitlines()) if s != f'Release {version}'), '')
+    """Subjects of the devel commits since the last release (oldest first): since the newest devel commit with the
+    same files as main (main's last release was made from it; devel may have moved on after its 'Release' commit),
+    else since the last release commit on devel; a commit for this same version (left by a release that was not
+    finished) does not count as one."""
+    main_tree = git('rev-parse', f'{MAIN}^{{tree}}')
+    last = next((h for h, t in (line.split() for line in git('log', WORK, '--format=%H %T').splitlines())
+                 if t == main_tree), '')
+    if not last:
+        last = next((h for h, s in (line.split(' ', 1) for line in git(
+            'log', WORK, '--format=%H %s', '--grep=^Release [0-9]').splitlines()) if s != f'Release {version}'), '')
     rng = f'{last}..{WORK}' if last else WORK
     return [s for s in git('log', '--reverse', '--format=%s', rng).splitlines() if not re.match(r'Release \d', s)]
 

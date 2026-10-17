@@ -376,6 +376,14 @@
         <translation>Zeit</translation>
     </message>
     <message>
+        <source>Program</source>
+        <translation>Programm</translation>
+    </message>
+    <message>
+        <source>Average current</source>
+        <translation>Mittlerer Strom</translation>
+    </message>
+    <message>
         <source>Health index</source>
         <translation>Gesundheitsindex</translation>
     </message>
@@ -434,6 +442,14 @@
     <message>
         <source>(deleted)</source>
         <translation>(gelöscht)</translation>
+    </message>
+    <message>
+        <source>The next session in this slot gets battery {}</source>
+        <translation>Die nächste Sitzung in diesem Schacht bekommt Akku {}</translation>
+    </message>
+    <message>
+        <source>Choose a battery here before you start: the next session in this slot gets it</source>
+        <translation>Akku hier vor dem Start wählen: die nächste Sitzung in diesem Schacht bekommt ihn</translation>
     </message>
     <message>
         <source>The task set on the charger:</source>
@@ -500,8 +516,32 @@
         <translation>&lt;p&gt;Die höchste Temperatur des Akkus während des Vorgangs. NiMH-Akkus werden gegen Ende des Ladens warm, das ist normal. Ab etwa 45 °C wird der Akku belastet: Kontakte und Ladestrom prüfen.&lt;/p&gt;</translation>
     </message>
     <message>
+        <source>&lt;p&gt;The program the charger ran the task with (MC5000): the profile BattBench started, with all its values. Started on the charger itself, only battery type, task and the currents (in steps of 100 mA) can be read from it.&lt;/p&gt;</source>
+        <translation>&lt;p&gt;Das Programm, mit dem das Ladegerät den Vorgang ausgeführt hat (MC5000): das Profil, das BattBench gestartet hat, mit allen Werten. Am Ladegerät selbst gestartet, lassen sich nur Akkutyp, Vorgang und die Ströme (in 100-mA-Schritten) auslesen.&lt;/p&gt;</translation>
+    </message>
+    <message>
+        <source>&lt;p&gt;The average current while charging and while discharging, worked out from the readings (pauses and rests left out).&lt;/p&gt;</source>
+        <translation>&lt;p&gt;Der mittlere Strom beim Laden und beim Entladen, aus den Messwerten berechnet (Pausen und Ruhezeiten nicht mitgezählt).&lt;/p&gt;</translation>
+    </message>
+    <message>
         <source>default ({} mAh)</source>
         <translation>Standard ({} mAh)</translation>
+    </message>
+    <message>
+        <source>charge {} mA</source>
+        <translation>Laden {} mA</translation>
+    </message>
+    <message>
+        <source>discharge {} mA</source>
+        <translation>Entladen {} mA</translation>
+    </message>
+    <message>
+        <source>Ø charge mA</source>
+        <translation>Ø Lade mA</translation>
+    </message>
+    <message>
+        <source>Ø disch. mA</source>
+        <translation>Ø Entl. mA</translation>
     </message>
     <message>
         <source>Status (charging / discharging / pause / done / error), operation, battery type, voltage, current, mAh, time, temperature, internal resistance. MC5000: start / stop with profiles, charger settings, Bluetooth pause (over Bluetooth or a BattBench-ESP). MC3000: read only.</source>
@@ -1604,6 +1644,10 @@
         <translation>Schacht wählen: seine Kachel oder oben seine Nummer anklicken.</translation>
     </message>
     <message>
+        <source>set on the charger, other values not known</source>
+        <translation>am Ladegerät eingestellt, übrige Werte unbekannt</translation>
+    </message>
+    <message>
         <source>Export report</source>
         <translation>Bericht exportieren</translation>
     </message>
@@ -1642,6 +1686,18 @@
     <message>
         <source>The charger is free for the SkyRC app; nothing is recorded.</source>
         <translation>Das Ladegerät ist frei für die SkyRC-App; es wird nichts aufgezeichnet.</translation>
+    </message>
+    <message>
+        <source>Fetching the readings the BattBench-ESP stored while BattBench was not running.</source>
+        <translation>Hole die Messwerte, die das BattBench-ESP gespeichert hat, während BattBench nicht lief.</translation>
+    </message>
+    <message>
+        <source>Now at {} ({} behind); the slots show that time.</source>
+        <translation>Stand {} ({} zurück); die Schächte zeigen diesen Zeitpunkt.</translation>
+    </message>
+    <message>
+        <source>Catching up {} %</source>
+        <translation>Nachladen {} %</translation>
     </message>
     <message>
         <source>No answer since {} ({}).</source>

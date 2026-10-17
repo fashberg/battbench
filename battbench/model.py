@@ -74,6 +74,9 @@ CONTACT_LOST = QT_TRANSLATE_NOOP('data', 'contact lost')                  # the 
 GAP_SECS = 300            # no data for this long -> session closed
 MIN_SECS = 10             # shorter sessions are not stored (e.g. an empty slot probing for a cell)
 PHASE_MIN_MA = 10         # a full cell on the A4 Air shows -3..+7 mA noise; real currents are >= 23 mA
+CURRENT_DT = 60           # s: a reading counts at most this long for the average currents (gaps in the data)
+EMPTY_SECS = 5            # s: a slot empty this long had its cell taken out (the MC5000 shows "empty" for one
+                          # reading when a task ends)
 NOMINAL = {'AA': 2000, 'AAA': 800}
 
 
@@ -112,6 +115,17 @@ class Session:
     points: list = field(default_factory=list, repr=False)    # (t, mV, mA) of the running discharge phase
     stop_reason: str = ''             # error the charger stopped the task with (Sample.mode_str of mode 20)
     paused: bool = False              # right now resting between phases (SkyRC; live only, not stored)
+    profile: Optional[str] = None     # JSON: the charger's program the task ran with (MC5000), see DB.set_profile
+    currents: 'CurrentAverage' = field(default_factory=lambda: CurrentAverage(), repr=False)
+    follows: Optional['Session'] = field(default=None, repr=False)    # the slot's session before, cell not taken out
+
+    @property
+    def avg_charge_ma(self) -> Optional[int]:
+        return self.currents.charge_ma
+
+    @property
+    def avg_discharge_ma(self) -> Optional[int]:
+        return self.currents.discharge_ma
 
     def finish_curve(self):
         """The last discharge phase is over: evaluate its voltage curve."""
@@ -318,6 +332,44 @@ def note_text(notes, translate=lambda text: text):
                      for text, values in notes)
 
 
+class CurrentAverage:
+    """Average charge / discharge current, weighted by time: each reading counts until the next one (at most
+    CURRENT_DT), so 1 s live readings and the thinned stored ones give the same result. Pauses (|current| below
+    PHASE_MIN_MA, e.g. rests or the A4 Air's pulsed charging) don't count."""
+
+    def __init__(self):
+        self.sums = [0.0, 0.0, 0.0, 0.0]          # charge mA*s, s, discharge mA*s, s
+        self.last = None                          # (t, mA) of the previous reading
+
+    def add(self, t, ma):
+        if self.last is not None:
+            t0, ma0 = self.last
+            dt = min(max(t - t0, 0), CURRENT_DT)
+            if ma0 >= PHASE_MIN_MA:
+                self.sums[0] += ma0 * dt
+                self.sums[1] += dt
+            elif ma0 <= -PHASE_MIN_MA:
+                self.sums[2] += -ma0 * dt
+                self.sums[3] += dt
+        self.last = (t, ma)
+
+    @property
+    def charge_ma(self) -> Optional[int]:
+        return round(self.sums[0] / self.sums[1]) if self.sums[1] else None
+
+    @property
+    def discharge_ma(self) -> Optional[int]:
+        return round(self.sums[2] / self.sums[3]) if self.sums[3] else None
+
+
+def average_currents(rows):
+    """(charge mA, discharge mA) averaged over readings (t, mA) in time order (None where there was none)."""
+    a = CurrentAverage()
+    for t, ma in rows:
+        a.add(t, ma)
+    return a.charge_ma, a.discharge_ma
+
+
 class Tracker:
     """Feeds samples (per device and slot, in time order) and maintains sessions/phases."""
 
@@ -325,6 +377,13 @@ class Tracker:
         self.current: Dict[Tuple[int, int], Session] = {}
         self.last: Dict[Tuple[int, int], Sample] = {}
         self.closed: List[Session] = []
+        self.follow: Dict[Tuple[int, int], Session] = {}   # last session of a slot whose cell is still in it
+        self.empty_since: Dict[Tuple[int, int], float] = {}
+
+    @staticmethod
+    def empty(s: Sample) -> bool:
+        """The slot is empty (mode 0 also means a cell is in but no task runs: SkyRC "ready")."""
+        return s.mode == 0 and (s.size == 'empty' or s.mv <= 0)
 
     def feed(self, s: Sample) -> Optional[Session]:
         key = (s.dev, s.slot)
@@ -333,6 +392,16 @@ class Tracker:
         if cur and prev and s.t - prev.t > GAP_SECS and not self._continues(cur, prev, s):
             self._close(cur, ABORTED)
             cur = None
+        if prev and s.t - prev.t > GAP_SECS and not cur:
+            self.follow.pop(key, None)                    # not known whether the cell was changed (no readings)
+            self.empty_since.pop(key, None)
+        since = self.empty_since.get(key)
+        if since is not None and s.t - since >= EMPTY_SECS:
+            self.follow.pop(key, None)                    # taken out
+        if self.empty(s):
+            self.empty_since.setdefault(key, s.t)
+        else:
+            self.empty_since.pop(key, None)
         if s.mode == 0:                                   # slot empty / idle
             if cur:
                 # after an error the charger stopped the task itself (e.g. SkyRC: capacity limit), else the cell
@@ -352,11 +421,12 @@ class Tracker:
             cur = None
         if cur is None:
             cur = Session(slot=s.slot, start=s.t, end=s.t, task=task, dev=s.dev, chem=s.chem, size=s.size,
-                          nominal=NOMINAL.get(s.size, 0))
+                          nominal=NOMINAL.get(s.size, 0), follows=self.follow.pop(key, None))
             self.current[key] = cur
         cur.end = s.t
         cur.dirty = True
         cur.paused = s.mode_str == PAUSE
+        cur.currents.add(s.t, s.ma)
         if s.chem not in ('auto', 'unknown'):
             cur.chem = s.chem
         if s.size not in ('empty', 'unknown'):
@@ -401,6 +471,7 @@ class Tracker:
         cur.dirty = True
         self.closed.append(cur)
         self.current.pop((cur.dev, cur.slot), None)
+        self.follow[(cur.dev, cur.slot)] = cur
 
     def sessions(self):
         return self.closed + list(self.current.values())

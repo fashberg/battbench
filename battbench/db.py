@@ -14,7 +14,7 @@ from typing import List
 
 from .device import N8_MODES, Sample
 from .model import (ABORTED, CONTACT_LOST, DISCHARGE, FINISHED, GAP_SECS, GRADES, MIN_SECS, PHASE_MIN_MA, REMOVED,
-                    RUNNING, Phase, Session, Tracker, discharge_curve)
+                    RUNNING, Phase, Session, Tracker, average_currents, discharge_curve)
 
 # Backups: gzip copies next to the database, on exit and every `hours` (0 = only on exit). Kept: the newest `keep`,
 # plus the newest one of each of the last `daily` days, `weekly` weeks and `monthly` months (settings in the app).
@@ -177,11 +177,13 @@ CREATE TABLE IF NOT EXISTS history (dev INTEGER, slot INTEGER, t REAL, mv INTEGE
 SESSION_FIELDS = ['id', 'slot', 'start', 'end', 'task', 'chem', 'size', 'status', 'nominal', 'label',
                   'discharge_mah', 'charge_mah', 'res_min', 'temp_max', 'grade', 'note', 'battery_id',
                   'battery_name', 'dev', 'dev_name', 'battery_deleted', 'deleted', 'res_first', 'res_last',
-                  'v_start', 'v_mid', 'early_drop', 'res_est', 'ohi', 'stop_reason']
+                  'v_start', 'v_mid', 'early_drop', 'res_est', 'ohi', 'stop_reason', 'avg_charge_ma',
+                  'avg_discharge_ma', 'profile', 'battery_maker', 'battery_capacity', 'battery_type']
 SESSION_SELECT = ('SELECT s.id, s.slot, s.start, s.end, s.task, s.chem, s.size, s.status, s.nominal, s.label, '
                   's.discharge_mah, s.charge_mah, s.res_min, s.temp_max, s.grade, s.note, s.battery_id, b.name, '
                   's.dev, d.name, b.deleted IS NOT NULL, s.deleted, s.res_first, s.res_last, '
-                  's.v_start, s.v_mid, s.early_drop, s.res_est, s.ohi, s.stop_reason '
+                  's.v_start, s.v_mid, s.early_drop, s.res_est, s.ohi, s.stop_reason, s.avg_charge_ma, '
+                  's.avg_discharge_ma, s.profile, b.maker, b.capacity, b.type '
                   'FROM sessions s LEFT JOIN batteries b ON b.id = s.battery_id LEFT JOIN devices d ON d.id = s.dev')
 DEVICE_FIELDS = ['id', 'key', 'model', 'name', 'slots', 'version', 'last_seen', 'alt_key']
 LEGACY_N8 = 'NXHOSTP-legacy'      # data recorded before chargers were told apart
@@ -286,6 +288,9 @@ class DB:
         if self.con.execute('PRAGMA user_version').fetchone()[0] < 14:
             self._skyrc_stops()
             self.con.execute('PRAGMA user_version = 14')
+        if self.con.execute('PRAGMA user_version').fetchone()[0] < 15:
+            self._currents_profile_columns()
+            self.con.execute('PRAGMA user_version = 15')
         if not self.con.execute('SELECT COUNT(*) FROM models').fetchone()[0]:
             self.con.executemany('INSERT INTO models (maker,name,type,capacity) VALUES (?,?,?,?)', DEFAULT_MODELS)
         self.con.commit()
@@ -506,7 +511,26 @@ class DB:
         return thin_rows(cur.fetchall(), secs) if secs else cur.fetchall()
 
     # ------------------------------------------------------------- sessions
+    def _inherit(self, s: Session):
+        """A new session whose cell stayed in the slot since the session before (stopped and started again, next
+        task): battery and nominal capacity of that one. Returns the battery id or None."""
+        f = s.follows
+        while f is not None and f.db_id is None and f.end - f.start < MIN_SECS:
+            f = f.follows                     # a false start of a few seconds is never stored: the one before
+        if f is None or f.db_id is None:
+            return None
+        row = self.con.execute('SELECT battery_id, nominal FROM sessions WHERE id=?', (f.db_id,)).fetchone()
+        if not row or row[0] is None:
+            return None
+        s.nominal = row[1] or s.nominal
+        return row[0]
+
     def save_session(self, s: Session):
+        planned = None
+        if s.db_id is None:
+            planned = self._take_plan(s)
+            if planned is None:
+                planned = self._inherit(s)
         grade, note, ohi = s.rating()
         v_mid = s.v_mid
         if v_mid is None and s.discharge_mah and s.status != RUNNING:
@@ -514,18 +538,24 @@ class DB:
         vals = (s.slot, s.start, s.end, s.task, s.chem, s.size, s.status, s.nominal,
                 s.discharge_mah, s.charge_mah, s.res_first, s.res_min, s.res_last, s.temp_max, grade, note, s.dev,
                 s.v_start, v_mid, None if s.early_drop is None else int(s.early_drop), int(s.res_est), ohi,
-                s.stop_reason)
+                s.stop_reason, s.avg_charge_ma, s.avg_discharge_ma, s.profile)
         if s.db_id is None:
             cur = self.con.execute(
                 'INSERT INTO sessions (slot,start,end,task,chem,size,status,nominal,discharge_mah,charge_mah,'
                 'res_first,res_min,res_last,temp_max,grade,note,dev,v_start,v_mid,early_drop,res_est,ohi,'
-                'stop_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', vals)
+                'stop_reason,avg_charge_ma,avg_discharge_ma,profile) '
+                'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', vals)
             s.db_id = cur.lastrowid
+            if s.follows is not None and s.follows.db_id is not None:
+                s.follows.follows = None      # no longer needed: keeps the chain of sessions short
+            if planned is not None:
+                self.con.execute('UPDATE sessions SET battery_id=? WHERE id=?', (planned, s.db_id))
         else:
             self.con.execute(
                 'UPDATE sessions SET slot=?,start=?,end=?,task=?,chem=?,size=?,status=?,nominal=?,discharge_mah=?,'
                 'charge_mah=?,res_first=?,res_min=?,res_last=?,temp_max=?,grade=?,note=?,dev=?,v_start=?,v_mid=?,'
-                'early_drop=?,res_est=?,ohi=?,stop_reason=? WHERE id=?', vals + (s.db_id,))
+                'early_drop=?,res_est=?,ohi=?,stop_reason=?,avg_charge_ma=?,avg_discharge_ma=?,profile=? WHERE id=?',
+                vals + (s.db_id,))
         self.con.execute('DELETE FROM phases WHERE session_id=?', (s.db_id,))
         self.con.executemany('INSERT INTO phases VALUES (?,?,?,?,?,?,?,?)',
                              [(s.db_id, i, p.kind, p.start, p.end, p.mah, p.mv_start, p.mv_end)
@@ -541,11 +571,11 @@ class DB:
                     self.con.execute('DELETE FROM phases WHERE session_id=?', (s.db_id,))
                     self.con.execute('DELETE FROM sessions WHERE id=?', (s.db_id,))
                 s.dirty = False
+        for s in tracker.closed:              # first: a new session in the slot takes over their battery
+            if s.dirty:
+                self.save_session(s)
         for s in tracker.current.values():
             if s.dirty and s.end - s.start >= MIN_SECS:
-                self.save_session(s)
-        for s in tracker.closed:
-            if s.dirty:
                 self.save_session(s)
         tracker.closed = [s for s in tracker.closed if s.dirty]   # keep only unsaved ones
         self.con.commit()
@@ -574,6 +604,43 @@ class DB:
     def phases(self, session_id):
         return self.con.execute('SELECT kind, start, end, mah FROM phases WHERE session_id=? ORDER BY idx',
                                 (session_id,)).fetchall()
+
+    # A battery chosen for a slot without a session ("planned"): the next session started there gets it.
+    # Stored in the settings table as "<battery id> <time chosen>", so it outlasts a restart of the app.
+    @staticmethod
+    def _plan_key(dev, slot):
+        return f'plan_{dev}_{slot}'
+
+    def planned_battery(self, dev, slot):
+        """(battery id, time it was chosen) planned for the next session in this slot, or None."""
+        v = self.setting(self._plan_key(dev, slot))
+        if not v:
+            return None
+        bid, t = v.split()
+        return int(bid), float(t)
+
+    def plan_battery(self, dev, slot, battery_id):
+        """battery_id None: drop the plan."""
+        if battery_id is None:
+            self.con.execute('DELETE FROM settings WHERE key=?', (self._plan_key(dev, slot),))
+            self.con.commit()
+        else:
+            self.set_setting(self._plan_key(dev, slot), f'{battery_id} {time.time():.0f}')
+
+    def _take_plan(self, s: Session):
+        """A new session: the battery planned for its slot, if it was chosen before the session started (a session
+        rebuilt by resume() is older and keeps its own battery). The plan is used up; the battery's capacity
+        becomes the nominal one."""
+        plan = self.planned_battery(s.dev, s.slot)
+        if not plan or s.start < plan[1] - 5:
+            return None
+        self.con.execute('DELETE FROM settings WHERE key=?', (self._plan_key(s.dev, s.slot),))   # saved with it
+        b = self.battery(plan[0])
+        if not b:
+            return None
+        if b['capacity']:
+            s.nominal = b['capacity']
+        return b['id']
 
     def set_session_meta(self, session_id, label=None, nominal=None, battery_id=False):
         if battery_id is not False:                       # None = no battery
@@ -617,6 +684,29 @@ class DB:
             if row:
                 self.con.execute('UPDATE sessions SET status=?, stop_reason=? WHERE id=?', (ABORTED, row[0], sid))
                 self.rerate(sid, commit=False)
+
+    def _currents_profile_columns(self):
+        """Version 15: sessions.avg_charge_ma / avg_discharge_ma (time-weighted average currents, model.CurrentAverage),
+        worked out from the stored readings, and sessions.profile (the charger's program as JSON, see set_profile;
+        unknown for older sessions)."""
+        cols = [r[1] for r in self.con.execute('PRAGMA table_info(sessions)')]
+        for col, typ in (('avg_charge_ma', 'INTEGER'), ('avg_discharge_ma', 'INTEGER'), ('profile', 'TEXT')):
+            if col not in cols:
+                self.con.execute(f'ALTER TABLE sessions ADD COLUMN {col} {typ}')
+        for sid, dev, slot, start, end in self.con.execute(
+                'SELECT id, dev, slot, start, end FROM sessions').fetchall():
+            chg, dis = average_currents(self.con.execute(
+                'SELECT t, ma FROM samples WHERE dev=? AND slot=? AND t BETWEEN ? AND ? ORDER BY t',
+                (dev, slot, start, end)))
+            self.con.execute('UPDATE sessions SET avg_charge_ma=?, avg_discharge_ma=? WHERE id=?', (chg, dis, sid))
+
+    def set_profile(self, session_id, profile):
+        """profile: dict - 'prog' = mc5000.Program as dict (complete or only what the charger reports), 'pid' = id
+        of the saved profile it came from (or None), 'source' = 'battbench' (started by BattBench) or 'charger'
+        (battery type, task and currents read from the charger, the rest unknown)."""
+        self.con.execute('UPDATE sessions SET profile=? WHERE id=?',
+                         (json.dumps(profile) if profile is not None else None, session_id))
+        self.con.commit()
 
     def _skyrc_stops(self):
         """Version 14: MC5000 readings of a task the charger stopped (status 0 with an error, e.g. capacity limit)
@@ -927,9 +1017,9 @@ class DB:
         if not cands:
             return
         t0 = self._rebuild_from(min(cands))
-        old = self.con.execute('SELECT id, dev, slot, start, nominal, label, battery_id, deleted FROM sessions '
-                               'WHERE end >= ?', (t0 - GAP_SECS,)).fetchall()
-        meta = {(r[1], r[2], round(r[3])): (r[4], r[5], r[6], r[7]) for r in old}
+        old = self.con.execute('SELECT id, dev, slot, start, nominal, label, battery_id, deleted, profile '
+                               'FROM sessions WHERE end >= ?', (t0 - GAP_SECS,)).fetchall()
+        meta = {(r[1], r[2], round(r[3])): (r[4], r[5], r[6], r[7], r[8]) for r in old}
         for r in old:
             self.con.execute('DELETE FROM phases WHERE session_id=?', (r[0],))
             self.con.execute('DELETE FROM sessions WHERE id=?', (r[0],))
@@ -948,9 +1038,17 @@ class DB:
                           if dev == s.dev and slot == s.slot and s.start <= st <= s.end and v[2] is not None), m)
             if m:
                 s.nominal = m[0] or s.nominal
+                s.profile = s.profile or m[4]
                 restored.append((s, m[1], m[2], m[3]))
         self.save_dirty(tracker)
         for s, label, bid, deleted in restored:
             self.con.execute('UPDATE sessions SET label=?, battery_id=?, deleted=? WHERE id=?',
                              (label or '', bid, deleted, s.db_id))
+        done = {r[0].db_id for r in restored}
+        for s in tracker.sessions():          # new while the app was closed: the battery of the session before
+            if s.db_id is not None and s.db_id not in done:
+                bid = self._inherit(s)
+                if bid is not None:
+                    self.con.execute('UPDATE sessions SET battery_id=?, nominal=? WHERE id=?',
+                                     (bid, s.nominal, s.db_id))
         self.con.commit()

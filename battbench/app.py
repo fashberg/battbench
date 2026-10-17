@@ -31,7 +31,7 @@ from PySide6.QtCore import (QByteArray, QEvent, QLocale, QObject, QPointF, QRect
 from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QGuiApplication, QIcon, QImage, QKeySequence,
                            QPainter, QPen, QPixmap, QRegularExpressionValidator, QShortcut)
 from PySide6.QtSvg import QSvgRenderer
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter, QDialog,
+from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QCompleter, QDialog,
                                QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox,
                                QHBoxLayout, QHeaderView,
                                QProgressDialog,
@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
                                QProxyStyle, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStackedWidget, QSplitter,
                                QStyle,
                                QStyledItemDelegate, QStyleFactory, QStyleOptionViewItem, QTabWidget, QTableWidget,
-                               QTableWidgetItem, QTextBrowser, QToolButton, QVBoxLayout, QWidget)
+                               QTableWidgetItem, QTextBrowser, QTextEdit, QToolButton, QVBoxLayout, QWidget)
 
 from . import __version__
 from .version import AUTHOR, SOURCE, WEBSITE, full_version
@@ -246,6 +246,7 @@ def session_info(s: Session):
                 charge_mah=s.charge_mah, res_first=s.res_first, res_min=s.res_min, res_last=s.res_last,
                 temp_max=s.temp_max, grade=grade, note=note, ohi=ohi, v_start=s.v_start, v_mid=s.v_mid,
                 early_drop=s.early_drop, res_est=s.res_est, stop_reason=s.stop_reason, paused=s.paused,
+                avg_charge_ma=s.avg_charge_ma, avg_discharge_ma=s.avg_discharge_ma, profile=s.profile,
                 phases=[(p.kind, p.start, p.end, p.mah) for p in s.phases])
 
 
@@ -386,6 +387,7 @@ class Worker(QObject):
         self.bt_addrs, self.bt_addrs_t = {}, 0     # dev -> Bluetooth address, read at
         self.bt_mirrored = {}     # address -> pause taken over from a BattBench-ESP (_bt_mirror)
         self.gaps = {}            # (dev, slot) -> [(t0, t1)] without readings, to fill from the charger's curve
+        self.profile_done = set()  # session ids whose program was looked for (_find_profiles)
         self.gap_asked = {}       # (dev, slot) -> time the curve was last asked for
 
     def stop(self):
@@ -508,6 +510,7 @@ class Worker(QObject):
             if self.tracker.closed or now >= nxt_save:  # closed sessions: save at once
                 self.db.save_dirty(self.tracker)
                 nxt_save = now + 10
+                self._find_profiles()
                 self.sessions_changed.emit()
             if dirty and now - last_emit >= 0.5:
                 self.db.con.commit()
@@ -774,6 +777,8 @@ class Worker(QObject):
                 self._mc5000_ask(*cmd[1:])
             elif cmd[0] == 'bt':
                 self._bt(*cmd[1:])
+            elif cmd[0] == 'profile':
+                self._set_profile(*cmd[1:])
             elif cmd[0] == 'battery':
                 b = self.db.battery(cmd[1])
                 if b and b['capacity']:
@@ -821,6 +826,54 @@ class Worker(QObject):
                  interval, len(points), ', '.join(f'{hms(a)}-{hms(b)}' for a, b in gaps))
         if points:
             self.inbox.put(('history', key[0], key[1], points))
+
+    PROFILE_SECS = 45                     # s after the start: BattBench's own start has been confirmed by then
+
+    def _find_profiles(self):
+        """Sessions of an MC5000 get the program they run with (sessions.profile): the one BattBench started there
+        if the charger still shows it, else what the charger reports (battery type, task, currents). The currents
+        come from the read-only slot summary (5F), asked in a thread; the answer comes back as worker command."""
+        for s in list(self.tracker.current.values()):
+            if s.db_id is None or s.profile is not None or s.db_id in self.profile_done or                     s.end - s.start < self.PROFILE_SECS:
+                continue
+            self.profile_done.add(s.db_id)
+            conns = self.conns.get(s.dev, {})
+            if not any(getattr(r.charger, 'model', None) == 'MC5000' for r in conns.values()):
+                continue
+            conn = self._mc5000_conn(s.dev)
+            if conn is None:
+                self._set_profile(s.dev, s.slot, s.db_id, None)
+                continue
+
+            def ask(conn=conn, dev=s.dev, slot=s.slot, sid=s.db_id):
+                try:
+                    summary = mc5000.parse_summary(conn.command(mc5000.summary_packet(mc5000.SLOT_MASK[slot])))
+                except Exception as e:
+                    log.warning('MC5000 summary of slot %d failed: %s', slot + 1, e)
+                    summary = None
+                self.cmds.put(('profile', dev, slot, sid, summary))
+            threading.Thread(target=ask, daemon=True, name='mc5000-ask').start()
+
+    def _set_profile(self, dev, slot, sid, summary):
+        live = next((s for s in self.tracker.current.values() if s.db_id == sid), None)
+        st = mc5000.from_status(self._raw(dev, slot)[0])
+        if live is None or st is None or st[1] is None:
+            return
+        try:
+            known = json.loads(self.db.setting(f'mc5000:{dev}:{slot}') or 'null')
+        except ValueError:
+            known = None
+        p = mc5000.Program.from_dict(known['prog']) if known else None
+        if p and (p.chem, p.mode) == st and (summary is None or mc5000.same_currents(p, summary)):
+            profile = dict(prog=p.to_dict(), pid=known.get('pid'), source='battbench')
+        else:                                         # started on the charger: only what it reports
+            prog = dict(chem=st[0], mode=st[1])
+            if summary:
+                prog.update(charge_ma=summary['charge_ma'], discharge_ma=summary['discharge_ma'])
+            profile = dict(prog=prog, pid=None, source='charger')
+        live.profile = json.dumps(profile)
+        self.db.set_profile(sid, profile)
+        log.info('session %d (device %d slot %d): program %s', sid, dev, slot + 1, live.profile)
 
     def _mc5000_conn(self, dev):
         conns = self.conns.get(dev, {})
@@ -1211,12 +1264,14 @@ class SlotTile(QFrame):
         self.set_selected(False)
         self.set_color(COLORS['empty'])
 
-    def set_battery(self, bid, rating=''):
+    def set_battery(self, bid, rating='', planned=False):
         """Title: slot number, plus the ID of the battery assigned to the session in the slot and its rating
-        (as in the tables, e.g. "Slot 4 – #5 · 78 · B · medium")."""
+        (as in the tables, e.g. "Slot 4 – #5 · 78 · B · medium"); planned: the battery for the next session
+        ("Slot 4 → #5")."""
         slot = self.key[1] + 1
         text = f'{slot}' if self.compact else tr('Slot {}').format(slot)
-        self.head.setText(text + (f' – #{bid}' if bid is not None else '') + (f' · {rating}' if rating else ''))
+        mark = ' → ' if planned else ' – '
+        self.head.setText(text + (f'{mark}#{bid}' if bid is not None else '') + (f' · {rating}' if rating else ''))
 
     def set_color(self, color, blink=False):
         self.color = color
@@ -1860,8 +1915,12 @@ def mode_name(sample):
                    sample['mode_str'] == 'error' else sample['mode_str'])
 
 
-def battery_text(bid, name):
-    return f'#{bid} {name}' if bid is not None else ''
+def battery_text(bid, name, maker='', cap=0, typ=''):
+    """'#12 name  (maker, 2000 mAh, type)' - the same in the dropdowns and the session tables."""
+    if bid is None:
+        return ''
+    extra = ', '.join(x for x in (maker, f'{cap} mAh' if cap else '', typ) if x)
+    return f'#{bid} {name}' + (f'  ({extra})' if extra else '')
 
 
 def model_text(maker, name, cap=0, typ=''):
@@ -1982,7 +2041,9 @@ class EditCombo(QComboBox):
 
 class SearchCombo(EditCombo):
     """Dropdown with all entries; typing filters it (e.g. "ene pro aaa"). Entries keep their item data,
-    a typed text that matches nothing is reverted to the current entry."""
+    a typed text that matches nothing is reverted to the current entry. widen: called when the typed text matches
+    nothing, may refill the list with more entries (returns True then)."""
+    widen = None
 
     def __init__(self):
         super().__init__()
@@ -2002,7 +2063,14 @@ class SearchCombo(EditCombo):
         super().open_list()
 
     def _typed(self, text):
+        shown = self.itemText(self.currentIndex())
+        if shown and text.startswith(shown) and len(text) > len(shown):    # typed behind the entry: replace it
+            text = text[len(shown):]
+            self.setEditText(text)
         self.proxy.set_text(text)
+        if not self.proxy.rowCount() and self.widen and self.widen():     # refilled: the typed text again
+            self.setEditText(text)
+            self.proxy.set_text(text)
         self.comp.complete()
 
     def _picked(self, index):
@@ -2012,10 +2080,20 @@ class SearchCombo(EditCombo):
         self.setEditText(self.itemText(row))
         self.lineEdit().selectAll()
 
+    def _number_match(self):
+        """Only a number typed ("32" or "#32"): the match whose text starts with "#32 "."""
+        words = self.proxy.words
+        if len(words) == 1 and words[0].lstrip('#').isdigit():
+            prefix = '#' + words[0].lstrip('#') + ' '
+            for r in range(self.proxy.rowCount()):
+                if self.proxy.index(r, 0).data().startswith(prefix):
+                    return self.proxy.index(r, 0)
+        return None
+
     def _revert(self):
         if self.currentText() != self.itemText(self.currentIndex()):
-            if self.proxy.rowCount() >= 1 and self.proxy.words:     # Enter: take the first match
-                self._picked(self.proxy.index(0, 0))
+            if self.proxy.rowCount() >= 1 and self.proxy.words:     # Enter: the entry "#<number>", else the first match
+                self._picked(self._number_match() or self.proxy.index(0, 0))
             else:
                 self.setEditText(self.itemText(self.currentIndex()))
         self.proxy.set_text('')
@@ -2279,6 +2357,7 @@ class BatteryDialog(QDialog):
 class ResultPanel(QWidget):
     save = Signal(int, object, int)       # session id, battery id (None = none), nominal
     save_label = Signal(int, str)         # session id, note
+    plan = Signal(object, object)         # (dev, slot) without a session, battery id for its next session (None = none)
     phase_clicked = Signal(object)        # start time of the phase to show alone, None = whole run
     new_battery = Signal()
     export_report = Signal()              # "Export report …" of the session shown
@@ -2288,6 +2367,7 @@ class ResultPanel(QWidget):
         self.db = db
         self.sid = None
         self.cur = None
+        self.plan_slot = None             # (dev, slot) shown without a session: the battery picked is planned for it
         self.shown = (None, 0)            # battery id / nominal last filled into the edit fields
         self.picked = {}                  # session id -> model chosen there without a battery (not stored)
         self.dev_name = lambda dev: ''    # set by the main window
@@ -2329,6 +2409,7 @@ class ResultPanel(QWidget):
         self.f = {}
         tips = self.field_tips()
         for k, name in [('task', tr('Task')), ('status', tr('Status')), ('type', tr('Detected')), ('time', tr('Time')),
+                        ('profile', tr('Program')), ('currents', tr('Average current')),
                         ('health', tr('Health index')), ('use', tr('Suited for')),
                         ('dis', tr('Discharge capacity')), ('chg', tr('Charge capacity')),
                         ('res', tr('Internal resistance')), ('volt', tr('Voltage under load')),
@@ -2366,10 +2447,12 @@ class ResultPanel(QWidget):
         edit = QFormLayout()
         self.model = SearchCombo()            # filters the battery list; locked to the battery's model once assigned
         self.model.currentIndexChanged.connect(self._model_picked)
+        self.model.lineEdit().textEdited.connect(self._model_typed)
         edit.addRow(tr('Model:'), self.model)
         row = QHBoxLayout()
         self.battery = SearchCombo()
         self.battery.currentIndexChanged.connect(self._battery_picked)
+        self.battery.widen = self._all_models     # e.g. a number typed of a battery of another model
         row.addWidget(self.battery, 1)
         self.nb = QPushButton(tr('New …'))
         self.nb.clicked.connect(self.new_battery)
@@ -2409,7 +2492,8 @@ class ResultPanel(QWidget):
 
     def _lock_model(self):
         """The model can be chosen only while no battery is assigned (then the battery's model is shown)."""
-        self.model.setEnabled(self.sid is not None and self.battery.currentData() is None)
+        self.model.setEnabled((self.sid is not None or self.plan_slot is not None)
+                              and self.battery.currentData() is None)
 
     def reload_batteries(self, select=None):
         """Refill the battery dropdown with the batteries of the chosen model (all without a model);
@@ -2426,8 +2510,7 @@ class ResultPanel(QWidget):
         for r in self.db.batteries():
             if mid is not None and r[9] != mid or r[0] in busy:
                 continue
-            extra = ', '.join(x for x in (r[2], f'{r[3]} mAh' if r[3] else '', r[4]) if x)
-            self.battery.addItem(f'#{r[0]} {r[1]}' + (f'  ({extra})' if extra else ''), r[0])
+            self.battery.addItem(battery_text(r[0], r[1], r[2], r[3], r[4]), r[0])
         if b and b['deleted']:                # a deleted battery stays shown for its sessions (else it would be lost)
             self.battery.addItem(f"#{b['id']} {b['name']}  " + tr('(deleted)'), b['id'])
         i = self.battery.findData(keep)
@@ -2435,6 +2518,29 @@ class ResultPanel(QWidget):
         self.battery.blockSignals(False)
         self._show_binfo()
         self._lock_model()
+
+    def _model_typed(self, _text):
+        """A number typed into the model search ("32", "#32") is a battery number: continue in the battery field."""
+        text = self.model.currentText().strip()          # (SearchCombo may have replaced the shown entry)
+        if not text.lstrip('#').isdigit() or not self.battery.isEnabled():
+            return
+        self.model.comp.popup().hide()
+        self.model.proxy.set_text('')
+        self.model.setEditText(self.model.itemText(self.model.currentIndex()))
+        self.battery.setFocus(Qt.OtherFocusReason)
+        self.battery.setEditText(text)
+        self.battery._typed(text)
+        QTimer.singleShot(0, lambda: self.battery.lineEdit().end(False))     # after EditCombo's select-all: digits append
+
+    def _all_models(self):
+        """The battery typed is not in the chosen model's list: list the batteries of all models."""
+        if self.model.currentData() is None or not self.model.isEnabled():
+            return False
+        self._set_model(None)
+        if self.sid is not None:
+            self.picked[self.sid] = None
+        self.reload_batteries()
+        return True
 
     def _model_picked(self):
         self.reload_batteries()
@@ -2465,6 +2571,18 @@ class ResultPanel(QWidget):
     def _save(self):
         if self.sid is not None:
             self.save.emit(self.sid, self.battery.currentData(), self.nominal.value())
+        elif self.plan_slot is not None:
+            self.shown = (self.battery.currentData(), 0)
+            self._plan_title()
+            self.plan.emit(self.plan_slot, self.battery.currentData())
+
+    def _plan_title(self):
+        slot = tr('Slot {}').format(self.plan_slot[1] + 1)
+        b = self.db.battery(self.battery.currentData()) if self.battery.currentData() is not None else None
+        self.title.setText(f'{self.dev_name(self.plan_slot[0])} · {slot} · ' + tr('No session in this slot'))
+        self.grade.setText(tr('The next session in this slot gets battery {}').format(f"#{b['id']} {b['name']}")
+                           if b else tr('Choose a battery here before you start: the next session in this slot '
+                                        'gets it'))
 
     @staticmethod
     def field_tips():
@@ -2513,6 +2631,11 @@ class ResultPanel(QWidget):
             'temp': tr('<p>The highest temperature of the battery during the session. NiMH cells get warm towards '
                        'the end of charging, which is normal. Above about 45 °C the cell is stressed: check the '
                        'contacts and the charging current.</p>'),
+            'profile': tr('<p>The program the charger ran the task with (MC5000): the profile BattBench started, '
+                          'with all its values. Started on the charger itself, only battery type, task and the '
+                          'currents (in steps of 100 mA) can be read from it.</p>'),
+            'currents': tr('<p>The average current while charging and while discharging, worked out from the '
+                           'readings (pauses and rests left out).</p>'),
         }
 
     def _fit_phases(self):
@@ -2547,8 +2670,9 @@ class ResultPanel(QWidget):
         default = NOMINAL.get(d['size'], 0) if d else 0
         return tr('default ({} mAh)').format(default) if default else tr('not set')
 
-    def show_session(self, d, battery_id=None):
-        """d: dict like session_info() / DB.session_dict()."""
+    def show_session(self, d, battery_id=None, slot=None):
+        """d: dict like session_info() / DB.session_dict(). d None and slot = (dev, slot): a slot without a session,
+        battery_id = the battery planned for its next session (DB.planned_battery)."""
         # another session: keep a note typed without Enter (a tile click doesn't take the focus, so editingFinished
         # never came)
         if (d.get('id') if d else None) != self.sid:
@@ -2556,10 +2680,16 @@ class ResultPanel(QWidget):
         self.cur = d
         self.export.setEnabled(d is not None)
         enabled = d is not None and d.get('id') is not None
-        for w in (self.battery, self.nominal, self.nb, self.label):
+        plan_slot = slot if d is None else None
+        # set each state once: disabling the focused field even for a moment (this runs every second) takes its focus
+        # and closes its list while the user types
+        for w in (self.nominal, self.label):
             w.setEnabled(enabled)
+        for w in (self.battery, self.nb):     # a slot without a session: a battery can be planned for it
+            w.setEnabled(enabled or plan_slot is not None)
         if d is None:
-            self.sid = None
+            same = self.sid is None and self.plan_slot == plan_slot
+            self.sid, self.plan_slot = None, plan_slot
             self.title.setText(tr('No session in this slot'))
             self.grade.setText('')
             self.grade.setStyleSheet('')
@@ -2568,15 +2698,21 @@ class ResultPanel(QWidget):
                 w.setText('')
             self.phases.setRowCount(0)
             self._fit_phases()
-            self._set_model(None)
-            self.reload_batteries(select=-1)
+            # refill unless the user is picking (as below for a session)
+            if not same or self.battery.currentData() == self.shown[0] and battery_id != self.shown[0]:
+                if not same:
+                    self._set_model(None)
+                self.reload_batteries(select=battery_id if battery_id is not None else -1)
+            self.shown = (battery_id if plan_slot else None, 0)
+            if plan_slot:
+                self._plan_title()
             self.nominal.set_value(0, '')
             self.label.setText('')
             self.shown_label = ''
             self._lock_model()
             return
-        same = self.sid == d.get('id')
-        self.sid = d.get('id')
+        same = self.sid == d.get('id') and self.plan_slot is None
+        self.sid, self.plan_slot = d.get('id'), None
         b = self.db.battery(battery_id, deleted=True) if battery_id is not None else None
         slot = tr('Slot {}').format(d['slot'] + 1)
         self.title.setText(f"{self.dev_name(d.get('dev'))} · {slot} · {fmt_t(d['start'])}" +
@@ -2642,6 +2778,10 @@ class ResultPanel(QWidget):
         elif d['res_min']:                    # rating of the value; lower is better (not obvious to everyone)
             self.f['res'].setText(self.f['res'].text() + '  –  ' + tr_data(RES_QUALITY[res_level(d['res_min'], d['chem'])]))
         self.f['temp'].setText(f"{d['temp_max']} °C" if d['temp_max'] else '–')
+        self.f['profile'].setText(session_profile_text(d.get('profile')))
+        cur = [tr('charge {} mA').format(d['avg_charge_ma']) if d.get('avg_charge_ma') else '',
+               tr('discharge {} mA').format(d['avg_discharge_ma']) if d.get('avg_discharge_ma') else '']
+        self.f['currents'].setText(' · '.join(x for x in cur if x) or '–')
         if not same:
             self.phase_sel = None
         self.phases.setRowCount(len(d['phases']))
@@ -2676,7 +2816,8 @@ def session_headers():
     """Column key -> header of the session tables."""
     return {'start': tr('Start'), 'dev': tr('Charger'), 'slot': tr('Slot'), 'task': tr('Task'),
             'status': tr('Status'), 'battery': tr('Battery'), 'detected': tr('Detected'), 'nominal': tr('Nominal'),
-            'dis': tr('Disch. mAh'), 'pct': '%', 'chg': tr('Charge mAh'), 'rmin': tr('R min'), 'tmax': tr('T max'),
+            'dis': tr('Disch. mAh'), 'pct': '%', 'chg': tr('Charge mAh'), 'chg_ma': tr('Ø charge mA'),
+            'dis_ma': tr('Ø disch. mA'), 'rmin': tr('R min'), 'tmax': tr('T max'),
             'grade': tr('Rating'), 'dur': tr('Duration'), 'label': tr('Note')}
 
 
@@ -2803,6 +2944,15 @@ def selected_ids(table):
     return [table.item(r, 0).data(Qt.UserRole) for r in rows if not table.isRowHidden(r)]
 
 
+def shortcut(key, widget, fn, context):
+    """QShortcut with the given context. PySide6 ignores context= in the constructor (the shortcut would then
+    fire in the whole window, e.g. Enter / Del typed into another field)."""
+    sc = QShortcut(QKeySequence(key), widget)
+    sc.setContext(context)
+    sc.activated.connect(fn)
+    return sc
+
+
 def row_menu(table, edit, delete, enter=None, keys=True, extra=()):
     """Right click on a row: Edit … (if edit is given), the extra (text, callable) / Delete; with several rows
     selected (Ctrl / Shift) only Delete. Keys: Enter = enter (default: edit, one row selected), Del = delete.
@@ -2811,7 +2961,7 @@ def row_menu(table, edit, delete, enter=None, keys=True, extra=()):
     table.setContextMenuPolicy(Qt.CustomContextMenu)
     enter = enter or (lambda: edit() if len(selected_ids(table)) == 1 else None)
     for key, fn in ((Qt.Key_Return, enter), (Qt.Key_Enter, enter), (Qt.Key_Delete, delete)) if keys else ():
-        QShortcut(QKeySequence(key), table, fn, context=Qt.WidgetShortcut)
+        shortcut(key, table, fn, Qt.WidgetShortcut)
 
     def show(pos):
         row = table.rowAt(pos.y())
@@ -2866,7 +3016,8 @@ def _fill_session_rows(table, rows, cols):
         vals = {'start': (fmt_t(d['start']), d['start']), 'dev': (d['dev_name'] or '', (d['dev_name'] or '').lower()),
                 'slot': (d['slot'] + 1, d['slot']), 'task': (tr_data(d['task']), tr_data(d['task']).lower()),
                 'status': (tr_data(d['status']), tr_data(d['status']).lower()),
-                'battery': (battery_text(d['battery_id'], d['battery_name']) +
+                'battery': (battery_text(d['battery_id'], d['battery_name'], d['battery_maker'], d['battery_capacity'],
+                                         d['battery_type']) +
                             (' ' + tr('(deleted)') if d['battery_deleted'] and d['battery_id'] is not None else ''),
                             d['battery_id']),
                 'detected': (' '.join(x for x in (d['chem'], d['size']) if x),
@@ -2874,6 +3025,8 @@ def _fill_session_rows(table, rows, cols):
                 'nominal': (nominal or '', nominal or None), 'dis': (dis or '', dis or None),
                 'pct': (pct, 100 * dis / nominal if dis and nominal else None),
                 'chg': (d['charge_mah'] or '', d['charge_mah'] or None), 'rmin': (d['res_min'] or '', d['res_min'] or None),
+                'chg_ma': (d['avg_charge_ma'] or '', d['avg_charge_ma'] or None),
+                'dis_ma': (d['avg_discharge_ma'] or '', d['avg_discharge_ma'] or None),
                 'tmax': (d['temp_max'] or '', d['temp_max'] or None),
                 'grade': ((tr_data(RUNNING), None) if is_measuring(d) else grade_cell(d['grade'], d['ohi'])[:2]),
                 'dur': (fmt_dur(d['end'] - d['start']), d['end'] - d['start']),
@@ -2909,7 +3062,8 @@ class BatteryTab(QWidget):
     models_changed = Signal(list)         # a model was added/edited: ids of its batteries
     sessions_deleted = Signal()           # sessions deleted from the history
     export_session = Signal(int)          # "Export report …" on a session of the history
-    HIST_COLS = ['start', 'dev', 'slot', 'task', 'status', 'dis', 'pct', 'chg', 'rmin', 'tmax', 'grade', 'dur', 'label']
+    HIST_COLS = ['start', 'dev', 'slot', 'task', 'status', 'dis', 'pct', 'chg', 'chg_ma', 'dis_ma', 'rmin', 'tmax',
+                 'grade', 'dur', 'label']
 
     def __init__(self, db: DB):
         super().__init__()
@@ -2965,7 +3119,7 @@ class BatteryTab(QWidget):
         # Enter / Del: for the battery list or the history, whichever has the focus
         for key, fn in ((Qt.Key_Return, self._enter_key), (Qt.Key_Enter, self._enter_key),
                         (Qt.Key_Delete, self._delete_key)):
-            QShortcut(QKeySequence(key), self, fn, context=Qt.WidgetWithChildrenShortcut)
+            shortcut(key, self, fn, Qt.WidgetWithChildrenShortcut)
         right.addWidget(self.hist)
         self.split.addWidget(rw)
         self.split.setSizes([600, 400])
@@ -4346,6 +4500,33 @@ def profile_details(p: mc5000.Program):
     return '<br>'.join(lines)
 
 
+def session_profile_text(profile):
+    """sessions.profile (JSON, see DB.set_profile) as one line: name, battery type, task, then every value of the
+    program that applies to its task, currents first; '–' without one."""
+    try:
+        info = json.loads(profile) if profile else None
+    except ValueError:
+        info = None
+    if not info or not info.get('prog'):
+        return '–'
+    d = info['prog']
+    p = mc5000.Program.from_dict(d)
+    mode = mc_mode_names().get(p.mode, p.mode)
+    if p.mode == 'Cycle' and 'direction' in d:
+        mode += f' {p.direction} × {p.cycles}'
+    elif p.mode in ('Refresh', 'Break in') and 'cycles' in d:
+        mode += f' × {p.cycles}'
+    parts = ([f'"{p.name}"'] if p.name else []) + [p.chem, mode]
+    if p.chem == 'Eneloop' and 'eneloop' in d:
+        parts.append(tr('Eneloop type') + ' ' + mc5000.ENELOOP[p.eneloop][0])
+    for attr, label, unit, shown in profile_fields():
+        if attr in d and shown(p):
+            parts.append(f'{label} {field_text(attr, unit, getattr(p, attr))}')
+    if info.get('source') == 'charger':
+        parts.append(tr('set on the charger, other values not known'))
+    return ' · '.join(parts)
+
+
 class ChargerSettingsDialog(QDialog):
     """System settings of an MC5000 (sounds, backlight, screen timeout): read from the charger when it opens. Below
     them its Bluetooth connection: pause / switch off / on (to use the SkyRC app), the BattBench-ESP's web page."""
@@ -4630,8 +4811,8 @@ class DeviceTab(QWidget):
 
 
 class MainWindow(QMainWindow):
-    COLS = ['start', 'dev', 'slot', 'task', 'status', 'battery', 'detected', 'nominal', 'dis', 'pct', 'chg', 'rmin',
-            'tmax', 'grade', 'dur', 'label']
+    COLS = ['start', 'dev', 'slot', 'task', 'status', 'battery', 'detected', 'nominal', 'dis', 'pct', 'chg', 'chg_ma',
+            'dis_ma', 'rmin', 'tmax', 'grade', 'dur', 'label']
 
     def __init__(self, db_path, source, a4='both', bt=True, esp=(), esp_auto=True, skyrc='auto', skyrc_chosen=True):
         super().__init__()
@@ -4648,6 +4829,7 @@ class MainWindow(QMainWindow):
         self.online = {}               # dev -> dict(version, in_mv) of connected chargers
         self.live = {}                 # (dev, slot) -> sample dict
         self.cur = {}                  # (dev, slot) -> running session
+        self.closing = False           # database closed: signals still queued are ignored
         self.sel = None                # selected (dev, slot)
         self.hist_id = None            # session shown from a table (None = live slot)
         self.row_sid = None            # session last opened from the sessions table (a click on it again: no reload)
@@ -4690,6 +4872,7 @@ class MainWindow(QMainWindow):
         self.result = ResultPanel(self.db)
         self.result.dev_name = self.dev_name
         self.result.busy = self.busy_batteries
+        self.result.plan.connect(self.plan_battery)
         self.result.save.connect(self.save_meta)
         self.result.save_label.connect(lambda sid, text: self.worker.cmds.put(('label', sid, text)))
         self.result.new_battery.connect(self.new_battery_for_session)
@@ -4776,6 +4959,7 @@ class MainWindow(QMainWindow):
         self.load_tables()
         self.select_slot(None)
         self.restore_layout()
+        QApplication.instance().installEventFilter(self)     # Left / Right: previous / next slot (keyPress below)
 
     def dev_name(self, dev):
         d = self.devs.get(dev)
@@ -4961,6 +5145,14 @@ class MainWindow(QMainWindow):
                 text += tr('The charger is free for the SkyRC app; nothing is recorded.')
                 row['page'].set_offline(text, title, COLORS['idle'], (button, lambda dev=dev: self.bt_resume(dev)))
                 continue
+            catchup = next((p for n in self.worker.nets.values() if (p := n.progress(dev))), None) if on else None
+            if catchup:                                     # readings stored by the ESP while BattBench was closed
+                pct, t = catchup
+                row['page'].set_offline(
+                    tr('Fetching the readings the BattBench-ESP stored while BattBench was not running.') + '\n' +
+                    (tr('Now at {} ({} behind); the slots show that time.').format(hms(t), fmt_dur(now - t))
+                     if t else ''), tr('Catching up {} %').format(pct), COLORS['analysis'])
+                continue
             if on and not on.get('stale'):
                 row['page'].set_offline(None)
                 continue
@@ -4992,6 +5184,8 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- worker events
     def on_cycle(self, d):
+        if self.closing:
+            return
         for dev in d.get('merged', ()):
             self._remove_row(dev)
         self.online = d['devices']
@@ -5017,14 +5211,15 @@ class MainWindow(QMainWindow):
                 t.update_sample(smp)
                 s = self.cur.get((dev, slot)) if smp and smp['mode'] else None     # battery in the slot
                 h = health_of(s) if s and s['grade'] in USES else None
-                t.set_battery(self.db.battery_of(s['id']) if s and s['id'] else None,
-                              grade_cell(s['grade'], h['ohi'])[0] if h else '')
+                if s and s['id']:
+                    t.set_battery(self.db.battery_of(s['id']), grade_cell(s['grade'], h['ohi'])[0] if h else '')
+                else:
+                    t.set_battery(self._planned(dev, slot), planned=True)    # until its session is stored
         self._update_panels()
         self._fit_tiles()
         self._pick_start_slot()
         if self.hist_id is None:
-            s = self.cur.get(self.sel)
-            self.result.show_session(s, self.db.battery_of(s['id']) if s and s['id'] else None)
+            self._show_result()
             if time.time() - self.last_plot > 5:     # curves are re-read from the DB, so not every second
                 self.refresh_plot(keep_view=True)
 
@@ -5051,8 +5246,9 @@ class MainWindow(QMainWindow):
         self.select_slot(key)
 
     def busy_batteries(self):
-        """Ids of the batteries assigned to the sessions of occupied slots (they are in a charger right now). Only for
-        the live view of a slot: a past session may be given any battery."""
+        """Ids of the batteries assigned to the sessions of occupied slots (they are in a charger right now) or
+        planned for the next session of another slot. Only for the live view of a slot: a past session may be given
+        any battery."""
         out = set()
         if self.hist_id is not None:
             return out
@@ -5061,9 +5257,70 @@ class MainWindow(QMainWindow):
                 bid = self.db.battery_of(s['id'])
                 if bid is not None:
                     out.add(bid)
+        for dev, row in self.rows.items():
+            for slot in range(len(row['tiles'])):
+                if (dev, slot) != self.sel:
+                    out.add(self._planned(dev, slot))
+        out.discard(None)
         return out
 
+    def _planned(self, dev, slot):
+        """Battery id planned for the next session in this slot, or None."""
+        plan = self.db.planned_battery(dev, slot)
+        return plan[0] if plan else None
+
+    def plan_battery(self, key, bid):
+        """Battery chosen in the result panel for a slot without a session: the next session there gets it."""
+        self.db.plan_battery(key[0], key[1], bid)
+        log.info('device %d slot %d: battery %s planned for the next session', key[0], key[1] + 1, bid)
+        self._update_tiles_plan(key)
+
+    def _update_tiles_plan(self, key):
+        row = self.rows.get(key[0])
+        if row and key[1] < len(row['tiles']):
+            row['tiles'][key[1]].set_battery(self._planned(*key), planned=True)
+
+    def _show_result(self):
+        """The result panel for the selected slot: its session, else the battery planned for it."""
+        s = self.cur.get(self.sel)
+        if s:
+            self.result.show_session(s, self.db.battery_of(s['id']) if s['id'] else None)
+        else:
+            self.result.show_session(None, self._planned(*self.sel) if self.sel else None, slot=self.sel)
+
     # ---------------------------------------------------------------- selection
+    def eventFilter(self, obj, e):
+        """Left / Right anywhere in the main window (not in a text field, not in an open list): previous / next
+        slot of the charger shown, like a click on its tile."""
+        if (e.type() == QEvent.KeyPress and e.key() in (Qt.Key_Left, Qt.Key_Right) and not self.closing
+                and not e.modifiers() & ~Qt.KeypadModifier and obj is QApplication.focusWidget()
+                and QApplication.activeWindow() is self and not QApplication.activePopupWidget()
+                and not isinstance(obj, (QLineEdit, QAbstractSpinBox, QTextEdit, QPlainTextEdit))
+                and not (isinstance(obj, QComboBox) and obj.isEditable() and not self._untouched(obj))):
+            return self._step_slot(-1 if e.key() == Qt.Key_Left else 1)
+        return super().eventFilter(obj, e)
+
+    @staticmethod
+    def _untouched(combo):
+        """A search list still showing its entry (nothing typed): Left / Right keep switching slots there."""
+        return isinstance(combo, SearchCombo) and combo.currentText() == combo.itemText(combo.currentIndex())
+
+    def _step_slot(self, step):
+        """Select the slot next to the selected one (no wrap-around); False if there is none to go to."""
+        row = self.rows.get(self.shown_dev)
+        if not row or not row['tiles']:
+            return False
+        cur = self.sel[1] if self.sel and self.sel[0] == self.shown_dev else self.last_slot.get(self.shown_dev)
+        slot = 0 if cur is None else cur + step
+        if not 0 <= slot < len(row['tiles']):
+            return True                   # at the end: swallow the key anyway (no jumping table columns)
+        self._tile_clicked((self.shown_dev, slot))
+        # type right away: the model (or a battery number) without a battery, else another battery
+        field = self.result.model if self.result.battery.currentData() is None else self.result.battery
+        if field.isEnabled():
+            field.setFocus(Qt.ShortcutFocusReason)
+        return True
+
     def _mark(self, key):
         if key:
             self.ctrl_sel.setdefault(key[0], {key[1]})
@@ -5101,6 +5358,8 @@ class MainWindow(QMainWindow):
         self.worker.cmds.put(('mc5000_ask', dev, 'summary', slot))
 
     def charger_info(self, d):
+        if self.closing:
+            return
         if d['kind'] == 'summary':
             key = (d['dev'], d['slot'])
             self.asking.discard(key)
@@ -5382,8 +5641,7 @@ class MainWindow(QMainWindow):
             self._show(key[0])
         self.table.clearSelection()
         self._mark(key)
-        s = self.cur.get(key)
-        self.result.show_session(s, self.db.battery_of(s['id']) if s and s['id'] else None)
+        self._show_result()
         self.refresh_plot()
 
     def refresh_plot(self, keep_view=False):
@@ -5679,6 +5937,7 @@ class MainWindow(QMainWindow):
         self.thread.wait(5000)
         self.hide()                            # the backup takes a few seconds for a large database
         QApplication.processEvents()
+        self.closing = True
         self.db.con.close()
         try:
             close_and_backup(self.db.path, backup_policy())
